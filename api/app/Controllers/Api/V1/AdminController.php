@@ -28,6 +28,25 @@ final class AdminController
         return ['data' => $this->admin->users()];
     }
 
+    public function plans(): array
+    {
+        return ['data' => $this->admin->plans()];
+    }
+
+    public function createPlan(Request $request): array
+    {
+        return ['data' => $this->admin->createPlan($request->json(), $request->attributes['identity']['id'])];
+    }
+
+    public function updatePlan(Request $request): array
+    {
+        return ['data' => $this->admin->updatePlan(
+            (string) ($request->attributes['route']['id'] ?? ''),
+            $request->json(),
+            $request->attributes['identity']['id'],
+        )];
+    }
+
     public function createBusiness(Request $request): array
     {
         return ['data' => $this->admin->createBusiness($request->json(), $request->attributes['identity']['id'])];

@@ -1,9 +1,9 @@
-import { Building2, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, X } from 'lucide-react';
+import { Building2, CreditCard, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, X } from 'lucide-react';
 import { useState, useSyncExternalStore } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
 import { authStore } from '../../stores/authStore';
-const items = [['/admin', 'Overview', LayoutDashboard], ['/admin/businesses', 'Businesses', Building2], ['/admin/users', 'Users', Users]] as const;
+const items = [['/admin', 'Overview', LayoutDashboard], ['/admin/businesses', 'Businesses', Building2], ['/admin/users', 'Users', Users], ['/admin/plans', 'Plans', CreditCard]] as const;
 export function AdminShell() {
   const [open, setOpen] = useState(false); const navigate = useNavigate(); const { user } = useSyncExternalStore(authStore.subscribe, authStore.getSnapshot);
   const logout = async () => { try { await api.post('/auth/logout'); } finally { authStore.clear(); navigate('/login', { replace: true }); } };

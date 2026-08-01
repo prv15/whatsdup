@@ -19,3 +19,6 @@ $router->add('GET', '/api/v1/admin/businesses', [$adminController, 'businesses']
 $router->add('POST', '/api/v1/admin/businesses', [$adminController, 'createBusiness'], [$authenticate, $permission('businesses.create')]);
 $router->add('PATCH', '/api/v1/admin/businesses/{id}', [$adminController, 'updateBusiness'], [$authenticate, $permission('businesses.update')]);
 $router->add('GET', '/api/v1/admin/users', [$adminController, 'users'], [$authenticate, $permission('users.view')]);
+$router->add('GET', '/api/v1/admin/plans', [$adminController, 'plans'], [$authenticate, $permission('plans.view')]);
+$router->add('POST', '/api/v1/admin/plans', [$adminController, 'createPlan'], [$authenticate, $permission('plans.manage')]);
+$router->add('PUT', '/api/v1/admin/plans/{id}', [$adminController, 'updatePlan'], [$authenticate, $permission('plans.manage')]);

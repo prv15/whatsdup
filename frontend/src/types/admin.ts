@@ -1,3 +1,5 @@
 export interface AdminMetrics { businesses: number; activeBusinesses: number; users: number; activeSessions: number; queuedJobs: number; failedJobs: number }
 export interface AdminBusiness { id: string; name: string; slug: string; timezone: string; status: 'pending' | 'active' | 'suspended' | 'archived'; ownerName: string | null; ownerEmail: string | null; userCount: number; createdAt: string }
 export interface AdminUser { id: string; name: string; email: string; status: string; emailVerified: boolean; lastLoginAt: string | null; createdAt: string; workspaces: string }
+export interface AdminPlanLimits { phoneNumbers: number | null; teamMembers: number | null; contacts: number | null; monthlyRecipients: number | null }
+export interface AdminPlan { id: string; name: string; code: string; description: string; priceMinor: number | null; currency: string; billingInterval: 'month' | 'year' | 'custom'; status: 'active' | 'archived'; isPublic: boolean; sortOrder: number; limits: AdminPlanLimits; features: string[]; createdAt: string; updatedAt: string }
