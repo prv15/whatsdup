@@ -1,0 +1,14 @@
+import { BarChart3, FileText, LayoutDashboard, LogOut, Menu, Megaphone, Settings, Users, X } from 'lucide-react';
+import { useState, useSyncExternalStore } from 'react';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { api } from '../../services/api';
+import { authStore } from '../../stores/authStore';
+const items = [['/dashboard', 'Dashboard', LayoutDashboard], ['/campaigns', 'Campaigns', Megaphone], ['/templates', 'Templates', FileText], ['/contacts', 'Contacts', Users], ['/reports', 'Reports', BarChart3], ['/settings', 'Settings', Settings]] as const;
+export function AppShell() {
+  const [open, setOpen] = useState(false); const navigate = useNavigate(); const { user } = useSyncExternalStore(authStore.subscribe, authStore.getSnapshot);
+  const logout = async () => { try { await api.post('/auth/logout'); } finally { authStore.clear(); navigate('/login', { replace: true }); } };
+  return <div className="min-h-screen bg-canvas lg:grid lg:grid-cols-[260px_1fr]"><button aria-label="Open navigation" onClick={() => setOpen(true)} className="fixed left-4 top-4 z-30 rounded-xl border border-line bg-white p-2.5 lg:hidden"><Menu/></button>{open && <button aria-label="Close navigation overlay" onClick={() => setOpen(false)} className="fixed inset-0 z-30 bg-black/30 lg:hidden"/>}
+    <aside className={`fixed inset-y-0 left-0 z-40 flex w-[280px] flex-col border-r border-line bg-white p-5 transition-transform lg:sticky lg:top-0 lg:h-screen lg:w-auto ${open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}><div className="mb-10 flex items-center justify-between px-2"><div className="text-xl font-semibold text-brand-700">WhatstheUp</div><button aria-label="Close navigation" onClick={() => setOpen(false)} className="lg:hidden"><X/></button></div><nav className="space-y-1">{items.map(([to, label, Icon]) => <NavLink key={to} to={to} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${isActive ? 'bg-brand-50 text-brand-700' : 'text-muted hover:bg-gray-50 hover:text-ink'}`}><Icon size={19}/>{label}</NavLink>)}</nav><div className="mt-auto border-t border-line pt-4"><div className="px-3"><p className="truncate text-sm font-semibold">{user?.name}</p><p className="truncate text-xs text-muted">{user?.business.name}</p></div><button onClick={logout} className="mt-3 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-muted hover:bg-gray-50"><LogOut size={18}/> Sign out</button></div></aside>
+    <div className="min-w-0"><header className="flex h-20 items-center justify-end border-b border-line bg-white px-5 sm:px-8"><div className="rounded-full bg-brand-50 px-3 py-1.5 text-sm font-medium text-brand-700">{user?.business.status ?? 'Workspace'}</div></header><main className="mx-auto max-w-7xl p-5 sm:p-8"><Outlet/></main></div>
+  </div>;
+}

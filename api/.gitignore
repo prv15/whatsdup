@@ -1,0 +1,9 @@
+.env
+vendor/
+.phpunit.cache/
+storage/logs/*.log
+storage/imports/*
+storage/exports/*
+storage/media/*
+storage/backups/*
+!storage/**/.gitkeep

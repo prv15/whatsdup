@@ -1,0 +1,68 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use WhatstheUp\Support\Uuid;
+
+$app = require dirname(__DIR__) . '/bootstrap/app.php';
+$command = $argv[1] ?? 'list';
+
+if ($command === 'migrate') {
+    $app->db->exec('CREATE TABLE IF NOT EXISTS migrations (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, migration VARCHAR(255) NOT NULL UNIQUE, executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+    $applied = $app->db->query('SELECT migration FROM migrations')->fetchAll(PDO::FETCH_COLUMN);
+    foreach (glob($app->root . '/database/migrations/*.sql') ?: [] as $file) {
+        $name = basename($file);
+        if (in_array($name, $applied, true)) {
+            continue;
+        }
+        $app->db->exec(file_get_contents($file));
+        $app->db->prepare('INSERT INTO migrations (migration) VALUES (?)')->execute([$name]);
+        fwrite(STDOUT, "Migrated {$name}\n");
+    }
+    exit(0);
+}
+
+if ($command === 'seed:foundation') {
+    $db = $app->db;
+    require $app->root . '/database/seeders/foundation.php';
+    fwrite(STDOUT, "Foundation roles and permissions seeded.\n");
+    exit(0);
+}
+
+if ($command === 'user:create-owner') {
+    $options = getopt('', ['business:', 'name:', 'email:', 'password:']);
+    foreach (['business', 'name', 'email', 'password'] as $required) {
+        if (!isset($options[$required]) || $options[$required] === '') {
+            fwrite(STDERR, "Required: --business --name --email --password\n");
+            exit(1);
+        }
+    }
+    if (strlen((string) $options['password']) < 12) {
+        fwrite(STDERR, "Password must be at least 12 characters.\n");
+        exit(1);
+    }
+    $businessId = Uuid::v4();
+    $userId = Uuid::v4();
+    $slug = strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', (string) $options['business']), '-')) . '-' . substr($businessId, 0, 8);
+    $app->db->beginTransaction();
+    try {
+        $app->db->prepare("INSERT INTO businesses (id, name, slug, timezone, status, created_at, updated_at) VALUES (?, ?, ?, 'UTC', 'active', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$businessId, $options['business'], $slug]);
+        $app->db->prepare("INSERT INTO users (id, name, email, password_hash, email_verified_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), 'active', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$userId, $options['name'], strtolower((string) $options['email']), password_hash((string) $options['password'], PASSWORD_ARGON2ID)]);
+        $app->db->prepare("INSERT INTO business_users (business_id, user_id, status, is_primary, joined_at, created_at, updated_at) VALUES (?, ?, 'active', TRUE, UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$businessId, $userId]);
+        $app->db->prepare("INSERT INTO user_roles (business_id, user_id, role_id, assigned_by, created_at) SELECT ?, ?, id, ?, UTC_TIMESTAMP() FROM roles WHERE name = 'Business Owner' AND scope = 'business'")->execute([$businessId, $userId, $userId]);
+        $app->db->commit();
+        fwrite(STDOUT, "Business owner created for {$slug}.\n");
+    } catch (Throwable $exception) {
+        $app->db->rollBack();
+        throw $exception;
+    }
+    exit(0);
+}
+
+if (in_array($command, ['queue:work', 'schedule:run', 'queue:retry', 'queue:health', 'meta:sync-pending-templates', 'reports:aggregate', 'meta:connection-health', 'cleanup:temporary-files', 'sessions:cleanup', 'database:backup'], true)) {
+    fwrite(STDERR, "{$command} is reserved for its implementation milestone and performs no simulated work.\n");
+    exit(2);
+}
+
+fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  user:create-owner --business=... --name=... --email=... --password=...\n");
