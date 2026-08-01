@@ -31,7 +31,16 @@ if ($command === 'seed:foundation') {
 }
 
 if ($command === 'user:create-owner') {
-    $options = getopt('', ['business:', 'name:', 'email:', 'password:']);
+    $options = [];
+    foreach (array_slice($argv, 2) as $argument) {
+        if (!str_starts_with($argument, '--') || !str_contains($argument, '=')) {
+            continue;
+        }
+        [$key, $value] = explode('=', substr($argument, 2), 2);
+        if (in_array($key, ['business', 'name', 'email', 'password'], true)) {
+            $options[$key] = $value;
+        }
+    }
     foreach (['business', 'name', 'email', 'password'] as $required) {
         if (!isset($options[$required]) || $options[$required] === '') {
             fwrite(STDERR, "Required: --business --name --email --password\n");
