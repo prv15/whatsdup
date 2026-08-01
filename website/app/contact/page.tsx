@@ -1,0 +1,6 @@
+import type { Metadata } from "next";
+import { LegalPage } from "../site-components";
+export const metadata: Metadata = { title: "Contact | WhatstheUp", description: "Contact WhatstheUp sales, support, privacy and legal teams." };
+export default function Contact() { return <LegalPage eyebrow="Contact" title="Let’s talk about your first campaign." intro="Tell us where you are in your WhatsApp Business Platform journey and we’ll help identify the next practical step.">
+  <div className="contact-grid"><a href="mailto:hello@whatstheup.in"><small>Sales and onboarding</small><h2>hello@whatstheup.in</h2><p>Product questions, onboarding and first-client launch.</p><span>Write to us →</span></a><a href="mailto:support@whatstheup.in"><small>Customer support</small><h2>support@whatstheup.in</h2><p>Account access, connection diagnostics and campaign issues.</p><span>Get support →</span></a><a href="mailto:privacy@whatstheup.in"><small>Privacy</small><h2>privacy@whatstheup.in</h2><p>Privacy questions, rights requests and data deletion.</p><span>Contact privacy →</span></a><a href="mailto:legal@whatstheup.in"><small>Legal</small><h2>legal@whatstheup.in</h2><p>Terms, compliance and formal notices.</p><span>Contact legal →</span></a></div>
+</LegalPage>; }
