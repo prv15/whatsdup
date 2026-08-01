@@ -1,9 +1,9 @@
-import { BarChart3, FileText, LayoutDashboard, LogOut, Menu, Megaphone, Settings, Users, X } from 'lucide-react';
+import { BarChart3, FileText, LayoutDashboard, Link2, LogOut, Menu, Megaphone, Settings, Users, X } from 'lucide-react';
 import { useState, useSyncExternalStore } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
 import { authStore } from '../../stores/authStore';
-const items = [['/dashboard', 'Dashboard', LayoutDashboard], ['/campaigns', 'Campaigns', Megaphone], ['/templates', 'Templates', FileText], ['/contacts', 'Contacts', Users], ['/reports', 'Reports', BarChart3], ['/settings', 'Settings', Settings]] as const;
+const items = [['/dashboard', 'Dashboard', LayoutDashboard], ['/campaigns', 'Campaigns', Megaphone], ['/templates', 'Templates', FileText], ['/contacts', 'Contacts', Users], ['/reports', 'Reports', BarChart3], ['/meta', 'Meta Connection', Link2], ['/settings', 'Settings', Settings]] as const;
 export function AppShell() {
   const [open, setOpen] = useState(false); const navigate = useNavigate(); const { user } = useSyncExternalStore(authStore.subscribe, authStore.getSnapshot);
   const logout = async () => { try { await api.post('/auth/logout'); } finally { authStore.clear(); navigate('/login', { replace: true }); } };

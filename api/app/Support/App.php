@@ -8,11 +8,16 @@ use PDO;
 use Throwable;
 use WhatstheUp\Controllers\Api\V1\AuthController;
 use WhatstheUp\Controllers\Api\V1\AdminController;
+use WhatstheUp\Controllers\Api\V1\MetaConnectionController;
 use WhatstheUp\Middleware\Authenticate;
 use WhatstheUp\Middleware\RequirePermission;
+use WhatstheUp\Middleware\RequireScope;
 use WhatstheUp\Services\AdminService;
 use WhatstheUp\Services\AuditService;
 use WhatstheUp\Services\AuthenticationService;
+use WhatstheUp\Services\MetaConnectionService;
+use WhatstheUp\Services\MetaGraphClient;
+use WhatstheUp\Security\TokenCipher;
 
 final class App
 {
@@ -28,8 +33,10 @@ final class App
         $auth = new AuthenticationService($db, $audit);
         $controller = new AuthController($auth);
         $adminController = new AdminController(new AdminService($db, $audit));
+        $metaController = new MetaConnectionController(new MetaConnectionService($db, new MetaGraphClient(), new TokenCipher(), $audit));
         $authenticate = new Authenticate($auth);
         $permission = static fn (string $name) => new RequirePermission($name);
+        $scope = static fn (string $name) => new RequireScope($name);
         require $root . '/routes/api.php';
         return new self($root, $db, $router);
     }
