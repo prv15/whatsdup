@@ -32,6 +32,10 @@ test("server-renders the complete marketing homepage", async () => {
   assert.match(html, /Official Cloud API/i);
   assert.match(html, /From Meta connection to measurable delivery/i);
   assert.match(html, /Official infrastructure\. No shortcuts\./i);
+  assert.match(html, /Choose a plan that fits your customer conversations/i);
+  assert.match(html, /₹999/);
+  assert.match(html, /₹2,499/);
+  assert.match(html, /Meta’s WhatsApp messaging charges are billed separately/i);
   assert.match(html, /href="\/privacy"/i);
   assert.match(html, /href="\/terms"/i);
   assert.match(html, /href="\/data-deletion"/i);

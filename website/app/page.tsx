@@ -48,6 +48,34 @@ export default function Home() {
 
       <section className="section shell compliance-grid"><div className="compliance-copy"><span className="eyebrow"><i /> Responsible by design</span><h2>Official infrastructure. No shortcuts.</h2><p>WhatstheUp is designed exclusively for Meta’s official WhatsApp Business Platform Cloud API. It does not use QR sessions, WhatsApp Web automation, scraping or unofficial sending libraries.</p><Link href="/privacy" className="text-link">Read our privacy approach <span>→</span></Link></div><div className="principle-grid"><article><span>01</span><h3>Tenant isolated</h3><p>Business data is scoped by authenticated membership—not browser-supplied identifiers.</p></article><article><span>02</span><h3>Tokens protected</h3><p>Long-lived credentials remain server-side and are encrypted at rest.</p></article><article><span>03</span><h3>Actions audited</h3><p>Security and operational events retain an accountable history.</p></article><article><span>04</span><h3>Approvals respected</h3><p>Unavailable or unapproved Meta features remain disabled with clear explanations.</p></article></div></section>
 
+      <section className="section pricing-section" id="pricing">
+        <div className="shell">
+          <div className="section-heading pricing-heading"><span className="eyebrow"><i /> Simple monthly plans</span><h2>Choose a plan that fits your customer conversations.</h2><p>Start with the essentials and move up as your audience and team grow. Every plan uses the official WhatsApp Business Platform Cloud API.</p></div>
+          <div className="pricing-grid">
+            <article className="price-card">
+              <div className="plan-intro"><span>Launch</span><p>For small businesses beginning with structured WhatsApp campaigns.</p></div>
+              <div className="plan-price"><b>₹999</b><span>/ month</span></div>
+              <a className="button secondary plan-button" href="mailto:hello@whatstheup.in?subject=WhatstheUp%20Launch%20plan">Choose Launch</a>
+              <ul><li>1 WhatsApp phone number</li><li>2 team members</li><li>Up to 5,000 contacts</li><li>10,000 campaign recipients/month</li><li>Contact import and groups</li><li>Template sync and campaigns</li><li>Delivery and read reporting</li><li>Email support</li></ul>
+            </article>
+            <article className="price-card featured">
+              <div className="popular-pill">Most popular</div>
+              <div className="plan-intro"><span>Growth</span><p>For growing teams running regular campaigns across larger audiences.</p></div>
+              <div className="plan-price"><b>₹2,499</b><span>/ month</span></div>
+              <a className="button primary plan-button" href="mailto:hello@whatstheup.in?subject=WhatstheUp%20Growth%20plan">Choose Growth</a>
+              <ul><li>2 WhatsApp phone numbers</li><li>5 team members</li><li>Up to 25,000 contacts</li><li>75,000 campaign recipients/month</li><li>Everything in Launch</li><li>Tags and custom contact fields</li><li>Advanced campaign reporting</li><li>Priority email support</li></ul>
+            </article>
+            <article className="price-card">
+              <div className="plan-intro"><span>Scale</span><p>For established operations needing higher limits and closer support.</p></div>
+              <div className="plan-price"><b>Custom</b><span>built for your volume</span></div>
+              <a className="button secondary plan-button" href="mailto:hello@whatstheup.in?subject=WhatstheUp%20Scale%20plan">Contact sales</a>
+              <ul><li>Multiple WhatsApp phone numbers</li><li>Custom team and contact limits</li><li>Custom campaign volume</li><li>Everything in Growth</li><li>Roles and permission controls</li><li>Audit and operational exports</li><li>Guided onboarding</li><li>Dedicated priority support</li></ul>
+            </article>
+          </div>
+          <p className="pricing-note">Prices exclude applicable taxes. Meta’s WhatsApp messaging charges are billed separately according to Meta’s current rates. Fair-use and platform policies apply.</p>
+        </div>
+      </section>
+
       <section className="cta-section shell"><div><span>Ready to build a better customer communication rhythm?</span><h2>Start with one clear, controlled campaign.</h2></div><a className="button light" href={appUrl}>Sign in to WhatstheUp <span aria-hidden="true">↗</span></a></section>
       <SiteFooter appUrl={appUrl}/>
     </main>
