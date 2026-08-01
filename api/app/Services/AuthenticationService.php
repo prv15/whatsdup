@@ -107,12 +107,26 @@ final class AuthenticationService
         $statement = $this->db->prepare('INSERT INTO user_sessions (id, user_id, token_family, refresh_token_hash, ip_address, user_agent, expires_at, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())');
         $statement->execute([$sessionId, $userId, $family, hash('sha256', $raw), $request->ip, $request->userAgent, $expires]);
         $identity = $this->identity($userId);
-        $this->audit->record($identity['business']['id'], $userId, 'auth.login', 'user_session', $sessionId, ['ip' => $request->ip]);
+        $this->audit->record($identity['business']['id'] ?? null, $userId, 'auth.login', 'user_session', $sessionId, ['ip' => $request->ip, 'scope' => $identity['scope']]);
         return $this->payload($identity, $sessionId, $raw);
     }
 
     private function identity(string $userId): array
     {
+        $platform = $this->db->prepare("SELECT u.id, u.name, u.email, u.email_verified_at FROM users u JOIN user_platform_roles upr ON upr.user_id = u.id JOIN roles r ON r.id = upr.role_id AND r.scope = 'platform' WHERE u.id = ? AND u.status = 'active' AND u.deleted_at IS NULL LIMIT 1");
+        $platform->execute([$userId]);
+        $platformUser = $platform->fetch();
+        if ($platformUser) {
+            $permissions = $this->db->prepare("SELECT DISTINCT p.name FROM permissions p JOIN role_permissions rp ON rp.permission_id = p.id JOIN user_platform_roles upr ON upr.role_id = rp.role_id WHERE upr.user_id = ? ORDER BY p.name");
+            $permissions->execute([$userId]);
+            $roles = $this->db->prepare("SELECT DISTINCT r.name FROM roles r JOIN user_platform_roles upr ON upr.role_id = r.id WHERE upr.user_id = ? ORDER BY r.name");
+            $roles->execute([$userId]);
+            return [
+                'id' => $platformUser['id'], 'name' => $platformUser['name'], 'email' => $platformUser['email'],
+                'emailVerified' => $platformUser['email_verified_at'] !== null, 'scope' => 'platform', 'business' => null,
+                'roles' => array_column($roles->fetchAll(), 'name'), 'permissions' => array_column($permissions->fetchAll(), 'name'),
+            ];
+        }
         $statement = $this->db->prepare("SELECT u.id, u.name, u.email, u.email_verified_at, b.id business_id, b.name business_name, b.slug business_slug, b.timezone, b.status business_status FROM users u JOIN business_users bu ON bu.user_id = u.id AND bu.status = 'active' JOIN businesses b ON b.id = bu.business_id AND b.status = 'active' WHERE u.id = ? AND u.status = 'active' AND u.deleted_at IS NULL ORDER BY bu.is_primary DESC, bu.created_at ASC LIMIT 1");
         $statement->execute([$userId]);
         $row = $statement->fetch();
@@ -125,6 +139,7 @@ final class AuthenticationService
         $roles->execute([$userId, $row['business_id']]);
         return [
             'id' => $row['id'], 'name' => $row['name'], 'email' => $row['email'], 'emailVerified' => $row['email_verified_at'] !== null,
+            'scope' => 'business',
             'business' => ['id' => $row['business_id'], 'name' => $row['business_name'], 'slug' => $row['business_slug'], 'timezone' => $row['timezone'], 'status' => $row['business_status']],
             'roles' => array_column($roles->fetchAll(), 'name'), 'permissions' => array_column($permissions->fetchAll(), 'name'),
         ];
@@ -132,7 +147,11 @@ final class AuthenticationService
 
     private function payload(array $identity, string $sessionId, string $refreshToken): array
     {
-        return ['accessToken' => Jwt::issue(['sub' => $identity['id'], 'sid' => $sessionId, 'bid' => $identity['business']['id']]), 'expiresIn' => Env::int('JWT_ACCESS_TTL', 900), 'user' => $identity, '_refreshToken' => $refreshToken];
+        $claims = ['sub' => $identity['id'], 'sid' => $sessionId, 'scope' => $identity['scope']];
+        if ($identity['business'] !== null) {
+            $claims['bid'] = $identity['business']['id'];
+        }
+        return ['accessToken' => Jwt::issue($claims), 'expiresIn' => Env::int('JWT_ACCESS_TTL', 900), 'user' => $identity, '_refreshToken' => $refreshToken];
     }
 
     private function guardRateLimit(string $email, string $ip): void

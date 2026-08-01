@@ -1,0 +1,14 @@
+import { Building2, LayoutDashboard, LogOut, Menu, ShieldCheck, Users, X } from 'lucide-react';
+import { useState, useSyncExternalStore } from 'react';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { api } from '../../services/api';
+import { authStore } from '../../stores/authStore';
+const items = [['/admin', 'Overview', LayoutDashboard], ['/admin/businesses', 'Businesses', Building2], ['/admin/users', 'Users', Users]] as const;
+export function AdminShell() {
+  const [open, setOpen] = useState(false); const navigate = useNavigate(); const { user } = useSyncExternalStore(authStore.subscribe, authStore.getSnapshot);
+  const logout = async () => { try { await api.post('/auth/logout'); } finally { authStore.clear(); navigate('/login', { replace: true }); } };
+  return <div className="min-h-screen bg-[#F6F8FA] lg:grid lg:grid-cols-[272px_1fr]"><button aria-label="Open navigation" onClick={() => setOpen(true)} className="fixed left-4 top-4 z-30 rounded-xl border border-line bg-white p-2.5 lg:hidden"><Menu/></button>{open && <button aria-label="Close navigation overlay" onClick={() => setOpen(false)} className="fixed inset-0 z-30 bg-black/30 lg:hidden"/>}
+    <aside className={`fixed inset-y-0 left-0 z-40 flex w-[288px] flex-col bg-[#102A2A] p-5 text-white transition-transform lg:sticky lg:top-0 lg:h-screen lg:w-auto ${open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}><div className="mb-9 flex items-center justify-between px-2"><div><div className="flex items-center gap-2 text-xl font-semibold"><ShieldCheck className="text-brand-500"/> WhatstheUp</div><p className="mt-1 pl-8 text-xs uppercase tracking-[.16em] text-white/45">Super Admin</p></div><button aria-label="Close navigation" onClick={() => setOpen(false)} className="lg:hidden"><X/></button></div><nav className="space-y-1">{items.map(([to, label, Icon]) => <NavLink end={to === '/admin'} key={to} to={to} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition ${isActive ? 'bg-white/12 text-white' : 'text-white/60 hover:bg-white/7 hover:text-white'}`}><Icon size={19}/>{label}</NavLink>)}</nav><div className="mt-auto border-t border-white/10 pt-4"><div className="px-3"><p className="truncate text-sm font-semibold">{user?.name}</p><p className="truncate text-xs text-white/45">Platform administrator</p></div><button onClick={logout} className="mt-3 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-white/60 hover:bg-white/7 hover:text-white"><LogOut size={18}/> Sign out</button></div></aside>
+    <div className="min-w-0"><header className="flex h-20 items-center justify-end border-b border-line bg-white px-5 sm:px-8"><span className="rounded-full bg-brand-50 px-3 py-1.5 text-sm font-medium text-brand-700">Platform healthy</span></header><main className="mx-auto max-w-7xl p-5 sm:p-8"><Outlet/></main></div>
+  </div>;
+}

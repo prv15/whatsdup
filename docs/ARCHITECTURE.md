@@ -10,6 +10,8 @@ Postponed: reseller UI/custom domains, automated billing, shared inbox, AI/chatb
 
 Users are identities; `business_users` are memberships. Middleware resolves an active business membership after authentication and ignores browser-provided `business_id`. Every business aggregate, query, unique rule, index and storage path is tenant-scoped. A future reseller may own businesses. Platform-scope Super Admin access and impersonation are separate and always audited with a reason.
 
+`user_platform_roles` assigns platform roles without a customer membership. A platform login receives a `platform` scope and no `business` object; a business login receives a `business` scope and one server-resolved workspace. The SPA routes these identities into separate protected shells.
+
 | Capability | Super Admin | Owner | Admin | Campaign Manager | Viewer |
 |---|---:|---:|---:|---:|---:|
 | Platform administration | Yes | No | No | No | No |

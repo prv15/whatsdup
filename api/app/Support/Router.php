@@ -17,9 +17,19 @@ final class Router
     public function dispatch(Request $request): mixed
     {
         foreach ($this->routes as [$method, $path, $handler, $middleware]) {
-            if ($method !== $request->method || $path !== $request->path) {
+            if ($method !== $request->method) {
                 continue;
             }
+            $parameterNames = [];
+            $pattern = preg_replace_callback('/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/', static function (array $matches) use (&$parameterNames): string {
+                $parameterNames[] = $matches[1];
+                return '([^/]+)';
+            }, $path);
+            if (!preg_match('#^' . $pattern . '$#', $request->path, $matches)) {
+                continue;
+            }
+            array_shift($matches);
+            $request->attributes['route'] = array_combine($parameterNames, array_map('urldecode', $matches)) ?: [];
             $next = fn (Request $current) => $handler($current);
             foreach (array_reverse($middleware) as $layer) {
                 $following = $next;

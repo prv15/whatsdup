@@ -7,6 +7,19 @@ use WhatstheUp\Support\Uuid;
 
 $app = require dirname(__DIR__) . '/bootstrap/app.php';
 $command = $argv[1] ?? 'list';
+$parseOptions = static function (array $arguments, array $allowed): array {
+    $options = [];
+    foreach ($arguments as $argument) {
+        if (!str_starts_with($argument, '--') || !str_contains($argument, '=')) {
+            continue;
+        }
+        [$key, $value] = explode('=', substr($argument, 2), 2);
+        if (in_array($key, $allowed, true)) {
+            $options[$key] = $value;
+        }
+    }
+    return $options;
+};
 
 if ($command === 'migrate') {
     $app->db->exec('CREATE TABLE IF NOT EXISTS migrations (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, migration VARCHAR(255) NOT NULL UNIQUE, executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
@@ -31,16 +44,7 @@ if ($command === 'seed:foundation') {
 }
 
 if ($command === 'user:create-owner') {
-    $options = [];
-    foreach (array_slice($argv, 2) as $argument) {
-        if (!str_starts_with($argument, '--') || !str_contains($argument, '=')) {
-            continue;
-        }
-        [$key, $value] = explode('=', substr($argument, 2), 2);
-        if (in_array($key, ['business', 'name', 'email', 'password'], true)) {
-            $options[$key] = $value;
-        }
-    }
+    $options = $parseOptions(array_slice($argv, 2), ['business', 'name', 'email', 'password']);
     foreach (['business', 'name', 'email', 'password'] as $required) {
         if (!isset($options[$required]) || $options[$required] === '') {
             fwrite(STDERR, "Required: --business --name --email --password\n");
@@ -69,9 +73,39 @@ if ($command === 'user:create-owner') {
     exit(0);
 }
 
+if ($command === 'user:create-super-admin') {
+    $options = $parseOptions(array_slice($argv, 2), ['name', 'email', 'password']);
+    foreach (['name', 'email', 'password'] as $required) {
+        if (!isset($options[$required]) || $options[$required] === '') {
+            fwrite(STDERR, "Required: --name --email --password\n");
+            exit(1);
+        }
+    }
+    if (!filter_var($options['email'], FILTER_VALIDATE_EMAIL) || strlen($options['password']) < 12) {
+        fwrite(STDERR, "Use a valid email and a password of at least 12 characters.\n");
+        exit(1);
+    }
+    $userId = Uuid::v4();
+    $app->db->beginTransaction();
+    try {
+        $app->db->prepare("INSERT INTO users (id, name, email, password_hash, email_verified_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), 'active', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$userId, $options['name'], strtolower($options['email']), password_hash($options['password'], PASSWORD_ARGON2ID)]);
+        $role = $app->db->prepare("INSERT INTO user_platform_roles (user_id, role_id, assigned_by, created_at) SELECT ?, id, ?, UTC_TIMESTAMP() FROM roles WHERE name = 'Super Admin' AND scope = 'platform'");
+        $role->execute([$userId, $userId]);
+        if ($role->rowCount() !== 1) {
+            throw new RuntimeException('Super Admin role has not been seeded.');
+        }
+        $app->db->commit();
+        fwrite(STDOUT, "Super Admin created for {$options['email']}.\n");
+    } catch (Throwable $exception) {
+        $app->db->rollBack();
+        throw $exception;
+    }
+    exit(0);
+}
+
 if (in_array($command, ['queue:work', 'schedule:run', 'queue:retry', 'queue:health', 'meta:sync-pending-templates', 'reports:aggregate', 'meta:connection-health', 'cleanup:temporary-files', 'sessions:cleanup', 'database:backup'], true)) {
     fwrite(STDERR, "{$command} is reserved for its implementation milestone and performs no simulated work.\n");
     exit(2);
 }
 
-fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  user:create-owner --business=... --name=... --email=... --password=...\n");
+fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  user:create-owner --business=... --name=... --email=... --password=...\n  user:create-super-admin --name=... --email=... --password=...\n");
