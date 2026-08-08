@@ -17,6 +17,7 @@
 /.next/
 /.vinext/
 /out/
+/directadmin-package/
 
 # misc
 .DS_Store

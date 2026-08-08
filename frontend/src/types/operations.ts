@@ -1,0 +1,6 @@
+export interface Contact { id: string; phone: string; name: string | null; email: string | null; tags: string[]; consentStatus: 'opted_in' | 'opted_out' | 'unknown'; consentAt: string | null; source: string; createdAt: string; updatedAt: string }
+export interface ContactImport { id: string; fileName: string; status: string; totalRows: number; importedRows: number; updatedRows: number; skippedRows: number; errors: { row: number; message: string }[]; createdAt: string; completedAt: string | null }
+export interface ContactsResponse { contacts: Contact[]; imports: ContactImport[] }
+export interface MessageTemplate { id: string; name: string; language: string; category: 'marketing' | 'utility' | 'authentication'; body: string; status: 'draft' | 'approved' | 'rejected'; rejectionReason: string | null; createdAt: string; updatedAt: string }
+export interface Campaign { id: string; name: string; audienceType: 'all_opted_in' | 'selected'; status: string; scheduledAt: string | null; launchedAt: string | null; completedAt: string | null; recipientCount: number; deliveredCount: number; readCount: number; failedCount: number; templateName: string; templateLanguage: string; createdAt: string }
+export interface WorkspaceDashboard { metrics: { messagesToday: number; contacts: number; approvedTemplates: number; scheduledCampaigns: number }; metaStatus: string }

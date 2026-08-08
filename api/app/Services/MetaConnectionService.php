@@ -105,4 +105,37 @@ final class MetaConnectionService
         $this->audit->record($businessId, $userId, 'meta.connection.completed', 'meta_connection', $connectionId, ['waba_id' => $wabaId, 'phone_number_id' => $phoneId]);
         return $this->status($businessId);
     }
+
+    public function syncTemplates(string $businessId, string $userId): array
+    {
+        $connection = $this->db->prepare("SELECT et.ciphertext, et.nonce, wa.meta_waba_id FROM meta_connections mc JOIN encrypted_tokens et ON et.id = mc.token_id JOIN waba_accounts wa ON wa.meta_connection_id = mc.id WHERE mc.business_id = ? AND mc.status = 'connected' AND mc.deleted_at IS NULL LIMIT 1");
+        $connection->execute([$businessId]);
+        $row = $connection->fetch();
+        if (!$row) {
+            throw new HttpException(422, 'Connect an active Meta WhatsApp account before syncing templates.', 'meta_not_connected');
+        }
+        $token = $this->cipher->decrypt((string) $row['ciphertext'], (string) $row['nonce']);
+        $response = $this->graph->getTemplates((string) $row['meta_waba_id'], $token);
+        $templates = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $statement = $this->db->prepare("INSERT INTO message_templates (id, business_id, meta_template_id, name, language, category, body, status, rejection_reason, created_by, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE meta_template_id = VALUES(meta_template_id), category = VALUES(category), body = VALUES(body), status = VALUES(status), rejection_reason = VALUES(rejection_reason), updated_at = UTC_TIMESTAMP(), deleted_at = NULL");
+        $synced = 0;
+        $this->db->beginTransaction();
+        try {
+            foreach ($templates as $template) {
+                if (!is_array($template) || !isset($template['name'], $template['language'])) continue;
+                $status = match (strtoupper((string) ($template['status'] ?? ''))) { 'APPROVED' => 'approved', 'REJECTED' => 'rejected', default => 'draft' };
+                $category = strtolower((string) ($template['category'] ?? 'marketing'));
+                if (!in_array($category, ['marketing', 'utility', 'authentication'], true)) $category = 'marketing';
+                $body = '';
+                foreach ((array) ($template['components'] ?? []) as $component) {
+                    if (is_array($component) && strtoupper((string) ($component['type'] ?? '')) === 'BODY') { $body = (string) ($component['text'] ?? ''); break; }
+                }
+                $statement->execute([Uuid::v4(), $businessId, (string) ($template['id'] ?? ''), strtolower((string) $template['name']), (string) $template['language'], $category, $body, $status, $status === 'rejected' ? 'Rejected by Meta. Check Meta Business Manager for details.' : null, $userId]);
+                $synced++;
+            }
+            $this->audit->record($businessId, $userId, 'meta.templates.synced', 'meta_connection', (string) $row['meta_waba_id'], ['count' => $synced]);
+            $this->db->commit();
+        } catch (Throwable $exception) { $this->db->rollBack(); throw $exception; }
+        return ['synced' => $synced];
+    }
 }

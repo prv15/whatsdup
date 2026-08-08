@@ -103,9 +103,31 @@ if ($command === 'user:create-super-admin') {
     exit(0);
 }
 
-if (in_array($command, ['queue:work', 'schedule:run', 'queue:retry', 'queue:health', 'meta:sync-pending-templates', 'reports:aggregate', 'meta:connection-health', 'cleanup:temporary-files', 'sessions:cleanup', 'database:backup'], true)) {
+if ($command === 'queue:work') {
+    $jobs = $app->db->query("SELECT id, job_type, payload, attempts, max_attempts FROM queue_jobs WHERE status = 'ready' AND available_at <= UTC_TIMESTAMP() ORDER BY priority, id LIMIT 25")->fetchAll();
+    $dispatcher = new \WhatstheUp\Services\CampaignDispatchService($app->db, new \WhatstheUp\Services\MetaGraphClient(), new \WhatstheUp\Security\TokenCipher(), new \WhatstheUp\Services\AuditService($app->db));
+    foreach ($jobs as $job) {
+        $app->db->prepare("UPDATE queue_jobs SET status = 'reserved', attempts = attempts + 1, locked_at = UTC_TIMESTAMP(), lock_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE), lock_token = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'ready'")->execute([Uuid::v4(), $job['id']]);
+        try {
+            $payload = json_decode((string) $job['payload'], true, 512, JSON_THROW_ON_ERROR);
+            if ($job['job_type'] !== 'campaign.dispatch' || !is_string($payload['campaign_id'] ?? null)) {
+                throw new RuntimeException('Unsupported queue job.');
+            }
+            $result = $dispatcher->dispatch($payload['campaign_id']);
+            $app->db->prepare("UPDATE queue_jobs SET status = 'completed', completed_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$job['id']]);
+            fwrite(STDOUT, "Campaign {$payload['campaign_id']} dispatched: {$result['sent']} sent, {$result['failed']} failed.\n");
+        } catch (Throwable $exception) {
+            $status = ((int) $job['attempts'] + 1) >= (int) $job['max_attempts'] ? 'failed' : 'ready';
+            $app->db->prepare("UPDATE queue_jobs SET status = ?, last_error_code = 'dispatch_failed', last_error = ?, available_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$status, mb_substr($exception->getMessage(), 0, 500), $job['id']]);
+            fwrite(STDERR, "Queue job {$job['id']} failed: {$exception->getMessage()}\n");
+        }
+    }
+    exit(0);
+}
+
+if (in_array($command, ['schedule:run', 'queue:retry', 'queue:health', 'meta:sync-pending-templates', 'reports:aggregate', 'meta:connection-health', 'cleanup:temporary-files', 'sessions:cleanup', 'database:backup'], true)) {
     fwrite(STDERR, "{$command} is reserved for its implementation milestone and performs no simulated work.\n");
     exit(2);
 }
 
-fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  user:create-owner --business=... --name=... --email=... --password=...\n  user:create-super-admin --name=... --email=... --password=...\n");
+fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  queue:work\n  user:create-owner --business=... --name=... --email=... --password=...\n  user:create-super-admin --name=... --email=... --password=...\n");

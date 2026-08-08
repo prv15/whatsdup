@@ -28,4 +28,10 @@ final class MetaConnectionController
         $identity = $request->attributes['identity'];
         return ['data' => $this->meta->complete($identity['business']['id'], $identity['id'], $request->json())];
     }
+
+    public function syncTemplates(Request $request): array
+    {
+        $identity = $request->attributes['identity'];
+        return ['data' => $this->meta->syncTemplates($identity['business']['id'], $identity['id'])];
+    }
 }

@@ -66,7 +66,7 @@ final class AdminService
 
     public function plans(): array
     {
-        $plans = $this->db->query('SELECT id, name, code, description, price_minor, currency, billing_interval, status, is_public, sort_order, limits, created_at, updated_at FROM plans ORDER BY sort_order, created_at')->fetchAll();
+        $plans = $this->db->query('SELECT id, name, code, description, price_minor, annual_price_minor, currency, billing_interval, status, is_public, sort_order, limits, created_at, updated_at FROM plans ORDER BY sort_order, created_at')->fetchAll();
         $featureRows = $this->db->query('SELECT plan_id, feature_key, value FROM plan_features ORDER BY plan_id, feature_key')->fetchAll();
         $features = [];
         foreach ($featureRows as $row) {
@@ -87,8 +87,8 @@ final class AdminService
         $id = Uuid::v4();
         $this->db->beginTransaction();
         try {
-            $statement = $this->db->prepare('INSERT INTO plans (id, name, code, description, price_minor, currency, billing_interval, status, is_public, sort_order, limits, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())');
-            $statement->execute([$id, $plan['name'], $plan['code'], $plan['description'], $plan['priceMinor'], $plan['currency'], $plan['billingInterval'], $plan['status'], $plan['isPublic'], $plan['sortOrder'], json_encode($plan['limits'], JSON_THROW_ON_ERROR)]);
+            $statement = $this->db->prepare('INSERT INTO plans (id, name, code, description, price_minor, annual_price_minor, currency, billing_interval, status, is_public, sort_order, limits, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())');
+            $statement->execute([$id, $plan['name'], $plan['code'], $plan['description'], $plan['priceMinor'], $plan['annualPriceMinor'], $plan['currency'], $plan['billingInterval'], $plan['status'], $plan['isPublic'], $plan['sortOrder'], json_encode($plan['limits'], JSON_THROW_ON_ERROR)]);
             $this->replacePlanFeatures($id, $plan['features']);
             $this->audit->record(null, $actorId, 'admin.plan.created', 'plan', $id, ['code' => $plan['code']]);
             $this->db->commit();
@@ -114,8 +114,8 @@ final class AdminService
         }
         $this->db->beginTransaction();
         try {
-            $statement = $this->db->prepare('UPDATE plans SET name = ?, code = ?, description = ?, price_minor = ?, currency = ?, billing_interval = ?, status = ?, is_public = ?, sort_order = ?, limits = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?');
-            $statement->execute([$plan['name'], $plan['code'], $plan['description'], $plan['priceMinor'], $plan['currency'], $plan['billingInterval'], $plan['status'], $plan['isPublic'], $plan['sortOrder'], json_encode($plan['limits'], JSON_THROW_ON_ERROR), $id]);
+            $statement = $this->db->prepare('UPDATE plans SET name = ?, code = ?, description = ?, price_minor = ?, annual_price_minor = ?, currency = ?, billing_interval = ?, status = ?, is_public = ?, sort_order = ?, limits = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?');
+            $statement->execute([$plan['name'], $plan['code'], $plan['description'], $plan['priceMinor'], $plan['annualPriceMinor'], $plan['currency'], $plan['billingInterval'], $plan['status'], $plan['isPublic'], $plan['sortOrder'], json_encode($plan['limits'], JSON_THROW_ON_ERROR), $id]);
             $this->replacePlanFeatures($id, $plan['features']);
             $this->audit->record(null, $actorId, 'admin.plan.updated', 'plan', $id, ['code' => $plan['code'], 'status' => $plan['status']]);
             $this->db->commit();
@@ -128,7 +128,7 @@ final class AdminService
 
     private function findPlan(string $id): array
     {
-        $statement = $this->db->prepare('SELECT id, name, code, description, price_minor, currency, billing_interval, status, is_public, sort_order, limits, created_at, updated_at FROM plans WHERE id = ?');
+        $statement = $this->db->prepare('SELECT id, name, code, description, price_minor, annual_price_minor, currency, billing_interval, status, is_public, sort_order, limits, created_at, updated_at FROM plans WHERE id = ?');
         $statement->execute([$id]);
         $row = $statement->fetch();
         if (!$row) {
@@ -144,7 +144,7 @@ final class AdminService
     {
         return [
             'id' => $row['id'], 'name' => $row['name'], 'code' => $row['code'], 'description' => $row['description'],
-            'priceMinor' => $row['price_minor'] === null ? null : (int) $row['price_minor'], 'currency' => $row['currency'],
+            'priceMinor' => $row['price_minor'] === null ? null : (int) $row['price_minor'], 'annualPriceMinor' => $row['annual_price_minor'] === null ? null : (int) $row['annual_price_minor'], 'currency' => $row['currency'],
             'billingInterval' => $row['billing_interval'], 'status' => $row['status'], 'isPublic' => (bool) $row['is_public'],
             'sortOrder' => (int) $row['sort_order'], 'limits' => json_decode((string) $row['limits'], true, 512, JSON_THROW_ON_ERROR),
             'features' => array_values($features), 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at'],
@@ -160,13 +160,14 @@ final class AdminService
         $billingInterval = (string) ($input['billingInterval'] ?? 'month');
         $status = (string) ($input['status'] ?? 'active');
         $priceMinor = ($input['priceMinor'] ?? null) === null || ($input['priceMinor'] ?? '') === '' ? null : filter_var($input['priceMinor'], FILTER_VALIDATE_INT);
+        $annualPriceMinor = ($input['annualPriceMinor'] ?? null) === null || ($input['annualPriceMinor'] ?? '') === '' ? null : filter_var($input['annualPriceMinor'], FILTER_VALIDATE_INT);
         if (mb_strlen($name) < 2 || mb_strlen($name) > 120 || !preg_match('/^[a-z][a-z0-9-]{1,79}$/', $code)) {
             throw new HttpException(422, 'Enter a plan name and a lowercase code using letters, numbers or hyphens.', 'validation_failed');
         }
         if (mb_strlen($description) > 500 || !preg_match('/^[A-Z]{3}$/', $currency) || !in_array($billingInterval, ['month', 'year', 'custom'], true) || !in_array($status, ['active', 'archived'], true)) {
             throw new HttpException(422, 'One or more plan details are invalid.', 'validation_failed');
         }
-        if ($priceMinor === false || ($priceMinor !== null && ($priceMinor < 0 || $priceMinor > 100000000))) {
+        if ($priceMinor === false || $annualPriceMinor === false || ($priceMinor !== null && ($priceMinor < 0 || $priceMinor > 100000000)) || ($annualPriceMinor !== null && ($annualPriceMinor < 0 || $annualPriceMinor > 1200000000))) {
             throw new HttpException(422, 'Enter a valid plan price.', 'validation_failed');
         }
         $limits = is_array($input['limits'] ?? null) ? $input['limits'] : [];
@@ -189,7 +190,7 @@ final class AdminService
             throw new HttpException(422, 'Add no more than 50 concise plan features.', 'validation_failed');
         }
         return [
-            'name' => $name, 'code' => $code, 'description' => $description, 'priceMinor' => $priceMinor,
+            'name' => $name, 'code' => $code, 'description' => $description, 'priceMinor' => $priceMinor, 'annualPriceMinor' => $annualPriceMinor,
             'currency' => $currency, 'billingInterval' => $billingInterval, 'status' => $status,
             'isPublic' => filter_var($input['isPublic'] ?? true, FILTER_VALIDATE_BOOL),
             'sortOrder' => max(0, min(10000, (int) ($input['sortOrder'] ?? 0))), 'limits' => $normalizedLimits, 'features' => $features,

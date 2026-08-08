@@ -33,7 +33,20 @@ final class MetaGraphClient
         return $this->request('POST', '/' . rawurlencode($wabaId) . '/subscribed_apps', $token);
     }
 
-    private function request(string $method, string $path, ?string $token = null, array $query = []): array
+    public function getTemplates(string $wabaId, string $token): array
+    {
+        return $this->request('GET', '/' . rawurlencode($wabaId) . '/message_templates', $token, ['fields' => 'id,name,status,language,category,components', 'limit' => '250']);
+    }
+
+    public function sendTemplate(string $phoneNumberId, string $token, string $to, string $templateName, string $language): array
+    {
+        return $this->request('POST', '/' . rawurlencode($phoneNumberId) . '/messages', $token, [], [
+            'messaging_product' => 'whatsapp', 'to' => $to, 'type' => 'template',
+            'template' => ['name' => $templateName, 'language' => ['code' => $language]],
+        ]);
+    }
+
+    private function request(string $method, string $path, ?string $token = null, array $query = [], ?array $payload = null): array
     {
         $version = Env::get('META_GRAPH_API_VERSION', '') ?? '';
         if (!preg_match('/^v\d+\.\d+$/', $version)) {
@@ -48,7 +61,14 @@ final class MetaGraphClient
         if ($token !== null) {
             $headers[] = 'Authorization: Bearer ' . $token;
         }
-        curl_setopt_array($handle, [CURLOPT_RETURNTRANSFER => true, CURLOPT_CUSTOMREQUEST => $method, CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30]);
+        if ($payload !== null) {
+            $headers[] = 'Content-Type: application/json';
+        }
+        $options = [CURLOPT_RETURNTRANSFER => true, CURLOPT_CUSTOMREQUEST => $method, CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30];
+        if ($payload !== null) {
+            $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_THROW_ON_ERROR);
+        }
+        curl_setopt_array($handle, $options);
         $body = curl_exec($handle);
         $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
         $curlError = curl_error($handle);

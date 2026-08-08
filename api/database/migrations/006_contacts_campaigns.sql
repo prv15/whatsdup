@@ -1,0 +1,103 @@
+CREATE TABLE contacts (
+    id CHAR(36) PRIMARY KEY,
+    business_id CHAR(36) NOT NULL,
+    phone_e164 VARCHAR(32) NOT NULL,
+    name VARCHAR(190) NULL,
+    email VARCHAR(254) NULL,
+    tags JSON NOT NULL,
+    custom_fields JSON NOT NULL,
+    consent_status ENUM('opted_in','opted_out','unknown') NOT NULL DEFAULT 'unknown',
+    consent_at DATETIME NULL,
+    source VARCHAR(80) NOT NULL DEFAULT 'manual',
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    deleted_at DATETIME NULL,
+    CONSTRAINT fk_contacts_business FOREIGN KEY (business_id) REFERENCES businesses(id),
+    UNIQUE KEY uq_contacts_phone (business_id, phone_e164),
+    INDEX idx_contacts_tenant_consent (business_id, consent_status, deleted_at),
+    INDEX idx_contacts_tenant_created (business_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE contact_imports (
+    id CHAR(36) PRIMARY KEY,
+    business_id CHAR(36) NOT NULL,
+    created_by CHAR(36) NOT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    status ENUM('completed','completed_with_errors','failed') NOT NULL,
+    total_rows INT UNSIGNED NOT NULL DEFAULT 0,
+    imported_rows INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_rows INT UNSIGNED NOT NULL DEFAULT 0,
+    skipped_rows INT UNSIGNED NOT NULL DEFAULT 0,
+    errors JSON NOT NULL,
+    created_at DATETIME NOT NULL,
+    completed_at DATETIME NULL,
+    CONSTRAINT fk_contact_imports_business FOREIGN KEY (business_id) REFERENCES businesses(id),
+    CONSTRAINT fk_contact_imports_user FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_contact_imports_tenant_created (business_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE message_templates (
+    id CHAR(36) PRIMARY KEY,
+    business_id CHAR(36) NOT NULL,
+    meta_template_id VARCHAR(128) NULL,
+    name VARCHAR(190) NOT NULL,
+    language VARCHAR(20) NOT NULL DEFAULT 'en_US',
+    category ENUM('marketing','utility','authentication') NOT NULL DEFAULT 'marketing',
+    body TEXT NOT NULL,
+    status ENUM('draft','approved','rejected') NOT NULL DEFAULT 'draft',
+    rejection_reason VARCHAR(500) NULL,
+    created_by CHAR(36) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    deleted_at DATETIME NULL,
+    CONSTRAINT fk_templates_business FOREIGN KEY (business_id) REFERENCES businesses(id),
+    CONSTRAINT fk_templates_creator FOREIGN KEY (created_by) REFERENCES users(id),
+    UNIQUE KEY uq_templates_name_language (business_id, name, language),
+    INDEX idx_templates_tenant_status (business_id, status, deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE campaigns (
+    id CHAR(36) PRIMARY KEY,
+    business_id CHAR(36) NOT NULL,
+    template_id CHAR(36) NOT NULL,
+    name VARCHAR(190) NOT NULL,
+    audience_type ENUM('all_opted_in','selected') NOT NULL DEFAULT 'all_opted_in',
+    status ENUM('draft','scheduled','queued','processing','completed','paused','cancelled','failed') NOT NULL DEFAULT 'draft',
+    scheduled_at DATETIME NULL,
+    launched_at DATETIME NULL,
+    completed_at DATETIME NULL,
+    recipient_count INT UNSIGNED NOT NULL DEFAULT 0,
+    delivered_count INT UNSIGNED NOT NULL DEFAULT 0,
+    read_count INT UNSIGNED NOT NULL DEFAULT 0,
+    failed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    created_by CHAR(36) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_campaigns_business FOREIGN KEY (business_id) REFERENCES businesses(id),
+    CONSTRAINT fk_campaigns_template FOREIGN KEY (template_id) REFERENCES message_templates(id),
+    CONSTRAINT fk_campaigns_creator FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_campaigns_tenant_status (business_id, status, scheduled_at),
+    INDEX idx_campaigns_tenant_created (business_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE campaign_contacts (
+    campaign_id CHAR(36) NOT NULL,
+    contact_id CHAR(36) NOT NULL,
+    business_id CHAR(36) NOT NULL,
+    phone_e164 VARCHAR(32) NOT NULL,
+    status ENUM('queued','sent','delivered','read','failed','skipped') NOT NULL DEFAULT 'queued',
+    meta_message_id VARCHAR(128) NULL,
+    failure_code VARCHAR(120) NULL,
+    failure_message VARCHAR(500) NULL,
+    sent_at DATETIME NULL,
+    delivered_at DATETIME NULL,
+    read_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (campaign_id, contact_id),
+    CONSTRAINT fk_campaign_contacts_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    CONSTRAINT fk_campaign_contacts_contact FOREIGN KEY (contact_id) REFERENCES contacts(id),
+    CONSTRAINT fk_campaign_contacts_business FOREIGN KEY (business_id) REFERENCES businesses(id),
+    INDEX idx_campaign_contacts_status (campaign_id, status),
+    INDEX idx_campaign_contacts_tenant (business_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

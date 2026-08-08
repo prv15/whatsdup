@@ -1,7 +1,5 @@
 * * * * * cd /home/ACCOUNT/private/api && php bin/console schedule:run
-* * * * * cd /home/ACCOUNT/private/api && php bin/console queue:work --queue=critical --time-limit=45
-* * * * * cd /home/ACCOUNT/private/api && php bin/console queue:work --queue=webhooks --time-limit=45
-* * * * * cd /home/ACCOUNT/private/api && php bin/console queue:work --queue=campaigns --time-limit=45
+* * * * * cd /home/ACCOUNT/private/api && php bin/console queue:work
 */5 * * * * cd /home/ACCOUNT/private/api && php bin/console queue:retry
 */5 * * * * cd /home/ACCOUNT/private/api && php bin/console meta:sync-pending-templates
 7 * * * * cd /home/ACCOUNT/private/api && php bin/console reports:aggregate
