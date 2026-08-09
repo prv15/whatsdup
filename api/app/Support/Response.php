@@ -22,4 +22,12 @@ final class Response
         http_response_code($status);
         exit;
     }
+
+    public static function text(string $content, int $status = 200): never
+    {
+        http_response_code($status);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo $content;
+        exit;
+    }
 }

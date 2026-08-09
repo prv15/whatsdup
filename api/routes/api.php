@@ -5,6 +5,8 @@ declare(strict_types=1);
 use WhatstheUp\Support\Request;
 
 $router->add('GET', '/api/v1/health', static fn () => ['status' => 'ok', 'service' => 'whatstheup-api', 'time' => gmdate(DATE_ATOM)]);
+$router->add('GET', '/api/v1/meta/webhook', [$metaWebhookController, 'verify']);
+$router->add('POST', '/api/v1/meta/webhook', [$metaWebhookController, 'receive']);
 $router->add('POST', '/api/v1/auth/login', [$controller, 'login']);
 $router->add('POST', '/api/v1/auth/refresh', [$controller, 'refresh']);
 $router->add('POST', '/api/v1/auth/logout', [$controller, 'logout']);
