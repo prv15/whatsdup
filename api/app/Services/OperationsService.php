@@ -84,12 +84,14 @@ final class OperationsService
     {
         $rows = $input['rows'] ?? null;
         $fileName = trim((string) ($input['fileName'] ?? 'contacts.csv'));
+        $source = (string) ($input['source'] ?? 'import');
+        if (!in_array($source, ['import', 'manual', 'paste'], true)) $source = 'import';
         if (!is_array($rows) || $rows === [] || count($rows) > 5000) {
             throw new HttpException(422, 'Upload between 1 and 5,000 contact rows at a time.', 'validation_failed');
         }
         $importId = Uuid::v4(); $imported = 0; $updated = 0; $skipped = 0; $errors = [];
         $exists = $this->db->prepare('SELECT id FROM contacts WHERE business_id = ? AND phone_e164 = ? LIMIT 1');
-        $upsert = $this->db->prepare("INSERT INTO contacts (id, business_id, phone_e164, name, email, tags, custom_fields, consent_status, consent_at, source, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, 'import', UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email), tags = VALUES(tags), consent_status = VALUES(consent_status), consent_at = VALUES(consent_at), source = 'import', deleted_at = NULL, updated_at = UTC_TIMESTAMP()");
+        $upsert = $this->db->prepare("INSERT INTO contacts (id, business_id, phone_e164, name, email, tags, custom_fields, consent_status, consent_at, source, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email), tags = VALUES(tags), consent_status = VALUES(consent_status), consent_at = VALUES(consent_at), source = VALUES(source), deleted_at = NULL, updated_at = UTC_TIMESTAMP()");
         $this->db->beginTransaction();
         try {
             foreach ($rows as $index => $row) {
@@ -103,7 +105,7 @@ final class OperationsService
                 $tags = array_values(array_unique(array_filter(array_map(static fn ($tag) => trim((string) $tag), is_array($row['tags'] ?? null) ? $row['tags'] : explode(',', (string) ($row['tags'] ?? ''))))));
                 $exists->execute([$businessId, $phone]);
                 $existingId = $exists->fetchColumn();
-                $upsert->execute([$existingId ?: Uuid::v4(), $businessId, $phone, $this->cleanText($row['name'] ?? null, 190), $email !== '' ? mb_strtolower($email) : null, json_encode($tags, JSON_THROW_ON_ERROR), $consent, $consent === 'opted_in' ? gmdate('Y-m-d H:i:s') : null]);
+                $upsert->execute([$existingId ?: Uuid::v4(), $businessId, $phone, $this->cleanText($row['name'] ?? null, 190), $email !== '' ? mb_strtolower($email) : null, json_encode($tags, JSON_THROW_ON_ERROR), $consent, $consent === 'opted_in' ? gmdate('Y-m-d H:i:s') : null, $source]);
                 $existingId ? $updated++ : $imported++;
             }
             $status = $skipped > 0 ? 'completed_with_errors' : 'completed';
