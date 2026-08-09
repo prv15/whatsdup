@@ -13,6 +13,8 @@ $router->add('POST', '/api/v1/auth/logout-all', [$controller, 'logoutAll'], [$au
 $router->add('GET', '/api/v1/dashboard', [$operationsController, 'dashboard'], [$authenticate, $scope('business'), $permission('dashboard.view')]);
 $router->add('GET', '/api/v1/contacts', [$operationsController, 'contacts'], [$authenticate, $scope('business'), $permission('contacts.view')]);
 $router->add('POST', '/api/v1/contacts/import', [$operationsController, 'importContacts'], [$authenticate, $scope('business'), $permission('contacts.import')]);
+$router->add('GET', '/api/v1/contact-groups', [$operationsController, 'contactGroups'], [$authenticate, $scope('business'), $permission('contacts.view')]);
+$router->add('POST', '/api/v1/contact-groups', [$operationsController, 'createContactGroup'], [$authenticate, $scope('business'), $permission('contacts.update')]);
 $router->add('GET', '/api/v1/templates', [$operationsController, 'templates'], [$authenticate, $scope('business'), $permission('templates.view')]);
 $router->add('POST', '/api/v1/templates', [$operationsController, 'createTemplate'], [$authenticate, $scope('business'), $permission('templates.create')]);
 $router->add('GET', '/api/v1/campaigns', [$operationsController, 'campaigns'], [$authenticate, $scope('business'), $permission('campaigns.view')]);

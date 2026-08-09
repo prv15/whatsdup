@@ -39,7 +39,45 @@ final class OperationsService
         $contacts = array_map(fn (array $row) => $this->formatContact($row), $statement->fetchAll());
         $imports = $this->db->prepare('SELECT id, file_name, status, total_rows, imported_rows, updated_rows, skipped_rows, errors, created_at, completed_at FROM contact_imports WHERE business_id = ? ORDER BY created_at DESC LIMIT 10');
         $imports->execute([$businessId]);
-        return ['contacts' => $contacts, 'imports' => array_map(static fn (array $row) => ['id' => $row['id'], 'fileName' => $row['file_name'], 'status' => $row['status'], 'totalRows' => (int) $row['total_rows'], 'importedRows' => (int) $row['imported_rows'], 'updatedRows' => (int) $row['updated_rows'], 'skippedRows' => (int) $row['skipped_rows'], 'errors' => json_decode((string) $row['errors'], true, 512, JSON_THROW_ON_ERROR), 'createdAt' => $row['created_at'], 'completedAt' => $row['completed_at']], $imports->fetchAll())];
+        return ['contacts' => $contacts, 'groups' => $this->contactGroups($businessId), 'imports' => array_map(static fn (array $row) => ['id' => $row['id'], 'fileName' => $row['file_name'], 'status' => $row['status'], 'totalRows' => (int) $row['total_rows'], 'importedRows' => (int) $row['imported_rows'], 'updatedRows' => (int) $row['updated_rows'], 'skippedRows' => (int) $row['skipped_rows'], 'errors' => json_decode((string) $row['errors'], true, 512, JSON_THROW_ON_ERROR), 'createdAt' => $row['created_at'], 'completedAt' => $row['completed_at']], $imports->fetchAll())];
+    }
+
+    public function contactGroups(string $businessId): array
+    {
+        $statement = $this->db->prepare('SELECT g.id, g.name, g.description, g.created_at, g.updated_at, COUNT(m.contact_id) member_count FROM contact_groups g LEFT JOIN contact_group_members m ON m.group_id = g.id LEFT JOIN contacts c ON c.id = m.contact_id AND c.deleted_at IS NULL WHERE g.business_id = ? AND g.deleted_at IS NULL GROUP BY g.id, g.name, g.description, g.created_at, g.updated_at ORDER BY g.name');
+        $statement->execute([$businessId]);
+        return array_map(static fn (array $row) => ['id' => $row['id'], 'name' => $row['name'], 'description' => $row['description'], 'memberCount' => (int) $row['member_count'], 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at']], $statement->fetchAll());
+    }
+
+    public function createContactGroup(string $businessId, string $userId, array $input): array
+    {
+        $name = trim((string) ($input['name'] ?? ''));
+        $description = $this->cleanText($input['description'] ?? null, 300);
+        $contactIds = is_array($input['contactIds'] ?? null) ? array_values(array_unique(array_filter($input['contactIds'], 'is_string'))) : [];
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 120 || $contactIds === []) {
+            throw new HttpException(422, 'Enter a group name and select at least one contact.', 'validation_failed');
+        }
+        $placeholders = implode(',', array_fill(0, count($contactIds), '?'));
+        $eligible = $this->db->prepare("SELECT id FROM contacts WHERE business_id = ? AND deleted_at IS NULL AND id IN ({$placeholders})");
+        $eligible->execute([$businessId, ...$contactIds]);
+        $validIds = $eligible->fetchAll(PDO::FETCH_COLUMN);
+        if ($validIds === []) {
+            throw new HttpException(422, 'Select contacts from this business.', 'validation_failed');
+        }
+        $id = Uuid::v4();
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('INSERT INTO contact_groups (id, business_id, name, description, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())')->execute([$id, $businessId, $name, $description, $userId]);
+            $member = $this->db->prepare('INSERT IGNORE INTO contact_group_members (group_id, contact_id, created_at) VALUES (?, ?, UTC_TIMESTAMP())');
+            foreach ($validIds as $contactId) $member->execute([$id, $contactId]);
+            $this->audit->record($businessId, $userId, 'contact_group.created', 'contact_group', $id, ['members' => count($validIds)]);
+            $this->db->commit();
+        } catch (Throwable $exception) {
+            $this->db->rollBack();
+            if ((string) $exception->getCode() === '23000') throw new HttpException(409, 'A group with this name already exists.', 'group_exists');
+            throw $exception;
+        }
+        return ['id' => $id, 'name' => $name, 'description' => $description, 'memberCount' => count($validIds)];
     }
 
     public function importContacts(string $businessId, string $userId, array $input): array
@@ -112,8 +150,9 @@ final class OperationsService
         $templateId = (string) ($input['templateId'] ?? '');
         $audience = (string) ($input['audienceType'] ?? 'all_opted_in');
         $selected = is_array($input['contactIds'] ?? null) ? array_values(array_unique(array_filter($input['contactIds'], 'is_string'))) : [];
+        $groupIds = is_array($input['groupIds'] ?? null) ? array_values(array_unique(array_filter($input['groupIds'], 'is_string'))) : [];
         $scheduleAt = trim((string) ($input['scheduledAt'] ?? ''));
-        if (mb_strlen($name) < 2 || mb_strlen($name) > 190 || !in_array($audience, ['all_opted_in', 'selected'], true) || ($audience === 'selected' && $selected === [])) { throw new HttpException(422, 'Choose a name, template and eligible audience.', 'validation_failed'); }
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 190 || !in_array($audience, ['all_opted_in', 'selected', 'groups'], true) || ($audience === 'selected' && $selected === []) || ($audience === 'groups' && $groupIds === [])) { throw new HttpException(422, 'Choose a name, template and eligible audience.', 'validation_failed'); }
         $template = $this->db->prepare('SELECT id FROM message_templates WHERE id = ? AND business_id = ? AND deleted_at IS NULL LIMIT 1'); $template->execute([$templateId, $businessId]);
         if (!$template->fetchColumn()) { throw new HttpException(422, 'Choose a template from this business.', 'validation_failed'); }
         $campaignId = Uuid::v4();
@@ -122,10 +161,21 @@ final class OperationsService
             $this->db->prepare("INSERT INTO campaigns (id, business_id, template_id, name, audience_type, status, scheduled_at, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$campaignId, $businessId, $templateId, $name, $audience, $scheduleAt !== '' ? $scheduleAt : null, $userId]);
             if ($audience === 'all_opted_in') {
                 $this->db->prepare("INSERT INTO campaign_contacts (campaign_id, contact_id, business_id, phone_e164, status, created_at, updated_at) SELECT ?, id, business_id, phone_e164, 'queued', UTC_TIMESTAMP(), UTC_TIMESTAMP() FROM contacts WHERE business_id = ? AND consent_status = 'opted_in' AND deleted_at IS NULL")->execute([$campaignId, $businessId]);
-            } else {
+            } elseif ($audience === 'selected') {
                 $placeholders = implode(',', array_fill(0, count($selected), '?'));
                 $statement = $this->db->prepare("INSERT INTO campaign_contacts (campaign_id, contact_id, business_id, phone_e164, status, created_at, updated_at) SELECT ?, id, business_id, phone_e164, 'queued', UTC_TIMESTAMP(), UTC_TIMESTAMP() FROM contacts WHERE business_id = ? AND consent_status = 'opted_in' AND deleted_at IS NULL AND id IN ({$placeholders})");
                 $statement->execute([$campaignId, $businessId, ...$selected]);
+            } else {
+                $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
+                $groups = $this->db->prepare("SELECT id FROM contact_groups WHERE business_id = ? AND deleted_at IS NULL AND id IN ({$placeholders})");
+                $groups->execute([$businessId, ...$groupIds]);
+                $validGroupIds = $groups->fetchAll(PDO::FETCH_COLUMN);
+                if ($validGroupIds === []) throw new HttpException(422, 'Choose groups from this business.', 'validation_failed');
+                $campaignGroup = $this->db->prepare('INSERT IGNORE INTO campaign_groups (campaign_id, group_id) VALUES (?, ?)');
+                foreach ($validGroupIds as $groupId) $campaignGroup->execute([$campaignId, $groupId]);
+                $groupPlaceholders = implode(',', array_fill(0, count($validGroupIds), '?'));
+                $statement = $this->db->prepare("INSERT IGNORE INTO campaign_contacts (campaign_id, contact_id, business_id, phone_e164, status, created_at, updated_at) SELECT ?, c.id, c.business_id, c.phone_e164, 'queued', UTC_TIMESTAMP(), UTC_TIMESTAMP() FROM contacts c JOIN contact_group_members m ON m.contact_id = c.id WHERE c.business_id = ? AND c.consent_status = 'opted_in' AND c.deleted_at IS NULL AND m.group_id IN ({$groupPlaceholders})");
+                $statement->execute([$campaignId, $businessId, ...$validGroupIds]);
             }
             $count = $this->db->prepare('SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ?'); $count->execute([$campaignId]);
             $this->db->prepare('UPDATE campaigns SET recipient_count = ? WHERE id = ?')->execute([(int) $count->fetchColumn(), $campaignId]);
