@@ -27,18 +27,22 @@ export function MetaConnectionPage() {
   }, [configuration.data]);
   useEffect(() => {
     const listener = (event: MessageEvent) => {
-      if (!['https://www.facebook.com', 'https://web.facebook.com'].includes(event.origin)) return;
+      const hostname = new URL(event.origin).hostname;
+      if (!['facebook.com', 'www.facebook.com', 'web.facebook.com', 'business.facebook.com'].includes(hostname)) return;
       let payload: unknown = event.data;
       if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch { return; } }
       const message = payload as { type?: string; event?: string; data?: { waba_id?: string; phone_number_id?: string } };
-      if (message.type === 'WA_EMBEDDED_SIGNUP' && message.event === 'FINISH' && message.data?.waba_id && message.data.phone_number_id) { assetsRef.current = { wabaId: message.data.waba_id, phoneNumberId: message.data.phone_number_id }; tryComplete(); }
+      if (message.type !== 'WA_EMBEDDED_SIGNUP') return;
+      if (message.event === 'FINISH' && message.data?.waba_id && message.data.phone_number_id) { assetsRef.current = { wabaId: message.data.waba_id, phoneNumberId: message.data.phone_number_id }; tryComplete(); }
+      if (message.event === 'CANCEL') setSignupError('Meta signup was cancelled before a WhatsApp phone number was connected.');
+      if (message.event === 'ERROR') setSignupError('Meta could not complete the embedded signup. Review the Meta popup and try again.');
     };
     window.addEventListener('message', listener); return () => window.removeEventListener('message', listener);
   });
   const startSignup = () => {
     const config = configuration.data; setSignupError(''); codeRef.current = null; assetsRef.current = null;
     if (!config?.enabled || !window.FB) { setSignupError('Meta Embedded Signup is not ready.'); return; }
-    window.FB.login((response) => { const code = response.authResponse?.code; if (!code) { setSignupError('Meta signup was cancelled or did not return an authorization code.'); return; } codeRef.current = code; tryComplete(); }, { config_id: config.configId, response_type: 'code', override_default_response_type: true, extras: { setup: {} } });
+    window.FB.login((response) => { const code = response.authResponse?.code; if (!code) { setSignupError('Meta signup was cancelled or did not return an authorization code.'); return; } codeRef.current = code; tryComplete(); window.setTimeout(() => { if (!assetsRef.current) setSignupError('Meta completed the popup but did not return a WhatsApp phone number. Reconnect and select or add a phone number in Meta.'); }, 5000); }, { config_id: config.configId, response_type: 'code', override_default_response_type: true, extras: { setup: {} } });
   };
   const state = connection.data; const configured = configuration.data?.enabled === true; const canConnect = configured && sdkReady && !configuration.data?.requiresHttps && state?.status === 'not_connected';
   return <div className="space-y-8"><div><p className="text-sm font-semibold text-brand-700">Official Cloud API</p><h1 className="mt-1 text-3xl font-semibold tracking-tight">Meta Connection</h1><p className="mt-2 max-w-3xl text-muted">Connect your Meta business portfolio, WhatsApp Business Account and phone number through Meta’s official Embedded Signup.</p></div>
