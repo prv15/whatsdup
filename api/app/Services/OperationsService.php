@@ -45,7 +45,7 @@ final class OperationsService
 
     public function contactGroups(string $businessId): array
     {
-        $statement = $this->db->prepare('SELECT g.id, g.name, g.description, g.created_at, g.updated_at, COUNT(m.contact_id) member_count FROM contact_groups g LEFT JOIN contact_group_members m ON m.group_id = g.id LEFT JOIN contacts c ON c.id = m.contact_id AND c.deleted_at IS NULL WHERE g.business_id = ? AND g.deleted_at IS NULL GROUP BY g.id, g.name, g.description, g.created_at, g.updated_at ORDER BY g.name');
+        $statement = $this->db->prepare('SELECT g.id, g.name, g.description, g.created_at, g.updated_at, COUNT(c.id) member_count FROM contact_groups g LEFT JOIN contact_group_members m ON m.group_id = g.id LEFT JOIN contacts c ON c.id = m.contact_id AND c.deleted_at IS NULL WHERE g.business_id = ? AND g.deleted_at IS NULL GROUP BY g.id, g.name, g.description, g.created_at, g.updated_at ORDER BY g.name');
         $statement->execute([$businessId]);
         return array_map(static fn (array $row) => ['id' => $row['id'], 'name' => $row['name'], 'description' => $row['description'], 'memberCount' => (int) $row['member_count'], 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at']], $statement->fetchAll());
     }
@@ -117,6 +117,64 @@ final class OperationsService
         return ['id' => $importId, 'importedRows' => $imported, 'updatedRows' => $updated, 'skippedRows' => $skipped, 'errors' => array_slice($errors, 0, 100)];
     }
 
+    public function updateContact(string $businessId, string $userId, string $id, array $input): array
+    {
+        $phone = $this->normalizePhone((string) ($input['phone'] ?? ''));
+        $email = trim((string) ($input['email'] ?? ''));
+        $consent = (string) ($input['consentStatus'] ?? 'unknown');
+        if ($phone === null || ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) || !in_array($consent, ['opted_in', 'opted_out', 'unknown'], true)) {
+            throw new HttpException(422, 'Enter a valid phone number, email and consent status.', 'validation_failed');
+        }
+        $tags = array_values(array_unique(array_filter(array_map(static fn ($tag) => trim((string) $tag), is_array($input['tags'] ?? null) ? $input['tags'] : explode(',', (string) ($input['tags'] ?? ''))))));
+        try {
+            $statement = $this->db->prepare("UPDATE contacts SET phone_e164 = ?, name = ?, email = ?, tags = ?, consent_status = ?, consent_at = IF(? = 'opted_in', COALESCE(consent_at, UTC_TIMESTAMP()), NULL), updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND deleted_at IS NULL");
+            $statement->execute([$phone, $this->cleanText($input['name'] ?? null, 190), $email !== '' ? mb_strtolower($email) : null, json_encode($tags, JSON_THROW_ON_ERROR), $consent, $consent, $id, $businessId]);
+        } catch (Throwable $exception) {
+            if ((string) $exception->getCode() === '23000') throw new HttpException(409, 'Another contact already uses this phone number.', 'contact_exists');
+            throw $exception;
+        }
+        if ($statement->rowCount() === 0) { $exists = $this->db->prepare('SELECT 1 FROM contacts WHERE id = ? AND business_id = ? AND deleted_at IS NULL'); $exists->execute([$id, $businessId]); if (!$exists->fetchColumn()) throw new HttpException(404, 'Contact not found.', 'not_found'); }
+        $this->audit->record($businessId, $userId, 'contact.updated', 'contact', $id);
+        $contact = $this->db->prepare('SELECT id, phone_e164, name, email, tags, consent_status, consent_at, source, created_at, updated_at FROM contacts WHERE id = ? AND business_id = ? AND deleted_at IS NULL');
+        $contact->execute([$id, $businessId]);
+        return $this->formatContact($contact->fetch());
+    }
+
+    public function deleteContact(string $businessId, string $userId, string $id): array
+    {
+        $statement = $this->db->prepare('UPDATE contacts SET deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND deleted_at IS NULL');
+        $statement->execute([$id, $businessId]);
+        if ($statement->rowCount() === 0) throw new HttpException(404, 'Contact not found.', 'not_found');
+        $this->audit->record($businessId, $userId, 'contact.deleted', 'contact', $id);
+        return ['id' => $id, 'deleted' => true];
+    }
+
+    public function updateContactGroup(string $businessId, string $userId, string $id, array $input): array
+    {
+        $name = trim((string) ($input['name'] ?? ''));
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 120) throw new HttpException(422, 'Enter a group name between 2 and 120 characters.', 'validation_failed');
+        try {
+            $statement = $this->db->prepare('UPDATE contact_groups SET name = ?, description = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND deleted_at IS NULL');
+            $statement->execute([$name, $this->cleanText($input['description'] ?? null, 300), $id, $businessId]);
+        } catch (Throwable $exception) {
+            if ((string) $exception->getCode() === '23000') throw new HttpException(409, 'A group with this name already exists.', 'group_exists');
+            throw $exception;
+        }
+        if ($statement->rowCount() === 0) { $exists = $this->db->prepare('SELECT 1 FROM contact_groups WHERE id = ? AND business_id = ? AND deleted_at IS NULL'); $exists->execute([$id, $businessId]); if (!$exists->fetchColumn()) throw new HttpException(404, 'Contact group not found.', 'not_found'); }
+        $this->audit->record($businessId, $userId, 'contact_group.updated', 'contact_group', $id);
+        foreach ($this->contactGroups($businessId) as $group) if ($group['id'] === $id) return $group;
+        throw new HttpException(404, 'Contact group not found.', 'not_found');
+    }
+
+    public function deleteContactGroup(string $businessId, string $userId, string $id): array
+    {
+        $statement = $this->db->prepare('UPDATE contact_groups SET deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND deleted_at IS NULL');
+        $statement->execute([$id, $businessId]);
+        if ($statement->rowCount() === 0) throw new HttpException(404, 'Contact group not found.', 'not_found');
+        $this->audit->record($businessId, $userId, 'contact_group.deleted', 'contact_group', $id);
+        return ['id' => $id, 'deleted' => true];
+    }
+
     public function templates(string $businessId): array
     {
         $statement = $this->db->prepare('SELECT id, name, language, category, header_type, header_media_url, body, status, rejection_reason, created_at, updated_at FROM message_templates WHERE business_id = ? AND deleted_at IS NULL ORDER BY created_at DESC');
@@ -140,6 +198,27 @@ final class OperationsService
         catch (Throwable $exception) { throw new HttpException(409, 'A template with this name and language already exists.', 'template_exists'); }
         $this->audit->record($businessId, $userId, 'template.created', 'message_template', $id, ['name' => $name]);
         return $this->templateById($businessId, $id);
+    }
+
+    public function updateTemplate(string $businessId, string $userId, string $id, array $input): array
+    {
+        $body = trim((string) ($input['body'] ?? ''));
+        $category = (string) ($input['category'] ?? 'marketing');
+        if ($body === '' || mb_strlen($body) > 1024 || !in_array($category, ['marketing', 'utility', 'authentication'], true)) throw new HttpException(422, 'Enter a valid category and message body.', 'validation_failed');
+        $statement = $this->db->prepare("UPDATE message_templates SET category = ?, body = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL");
+        $statement->execute([$category, $body, $id, $businessId]);
+        if ($statement->rowCount() === 0) { $draft = $this->db->prepare("SELECT 1 FROM message_templates WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL"); $draft->execute([$id, $businessId]); if (!$draft->fetchColumn()) throw new HttpException(422, 'Only local template drafts can be edited.', 'template_not_editable'); }
+        $this->audit->record($businessId, $userId, 'template.updated', 'message_template', $id);
+        return $this->templateById($businessId, $id);
+    }
+
+    public function deleteTemplate(string $businessId, string $userId, string $id): array
+    {
+        $statement = $this->db->prepare("UPDATE message_templates SET deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL");
+        $statement->execute([$id, $businessId]);
+        if ($statement->rowCount() === 0) throw new HttpException(422, 'Only local template drafts can be deleted.', 'template_not_deletable');
+        $this->audit->record($businessId, $userId, 'template.deleted', 'message_template', $id);
+        return ['id' => $id, 'deleted' => true];
     }
 
     public function campaigns(string $businessId): array
@@ -208,6 +287,34 @@ final class OperationsService
             $this->db->commit();
         } catch (Throwable $exception) { $this->db->rollBack(); throw $exception; }
         return $this->campaignById($businessId, $campaignId);
+    }
+
+    public function updateCampaign(string $businessId, string $userId, string $id, array $input): array
+    {
+        $name = trim((string) ($input['name'] ?? ''));
+        $scheduledAt = trim((string) ($input['scheduledAt'] ?? ''));
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 190) throw new HttpException(422, 'Enter a campaign name between 2 and 190 characters.', 'validation_failed');
+        $statement = $this->db->prepare("UPDATE campaigns SET name = ?, scheduled_at = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND status = 'draft'");
+        $statement->execute([$name, $scheduledAt !== '' ? $scheduledAt : null, $id, $businessId]);
+        if ($statement->rowCount() === 0) { $draft = $this->db->prepare("SELECT 1 FROM campaigns WHERE id = ? AND business_id = ? AND status = 'draft'"); $draft->execute([$id, $businessId]); if (!$draft->fetchColumn()) throw new HttpException(422, 'Only campaign drafts can be edited.', 'campaign_not_editable'); }
+        $this->audit->record($businessId, $userId, 'campaign.updated', 'campaign', $id);
+        return $this->campaignById($businessId, $id);
+    }
+
+    public function deleteCampaign(string $businessId, string $userId, string $id): array
+    {
+        $campaign = $this->db->prepare("SELECT id FROM campaigns WHERE id = ? AND business_id = ? AND status = 'draft' LIMIT 1");
+        $campaign->execute([$id, $businessId]);
+        if (!$campaign->fetchColumn()) throw new HttpException(422, 'Only campaign drafts can be deleted.', 'campaign_not_deletable');
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('DELETE FROM campaign_contacts WHERE campaign_id = ? AND business_id = ?')->execute([$id, $businessId]);
+            $this->db->prepare('DELETE FROM campaign_groups WHERE campaign_id = ?')->execute([$id]);
+            $this->db->prepare("DELETE FROM campaigns WHERE id = ? AND business_id = ? AND status = 'draft'")->execute([$id, $businessId]);
+            $this->audit->record($businessId, $userId, 'campaign.deleted', 'campaign', $id);
+            $this->db->commit();
+        } catch (Throwable $exception) { $this->db->rollBack(); throw $exception; }
+        return ['id' => $id, 'deleted' => true];
     }
 
     private function campaignById(string $businessId, string $campaignId): array

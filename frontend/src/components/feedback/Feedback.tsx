@@ -1,0 +1,11 @@
+import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
+
+export function InlineNotice({ kind = 'success', title, message, onDismiss }: { kind?: 'success' | 'error' | 'info'; title: string; message?: string; onDismiss?: () => void }) {
+  const styles = kind === 'error' ? 'border-red-200 bg-red-50 text-red-900' : kind === 'info' ? 'border-blue-200 bg-blue-50 text-blue-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900';
+  const Icon = kind === 'error' ? AlertCircle : kind === 'info' ? Info : CheckCircle2;
+  return <div role={kind === 'error' ? 'alert' : 'status'} className={`flex items-start gap-3 rounded-2xl border p-4 shadow-sm ${styles}`}><Icon className="mt-0.5 shrink-0" size={20}/><div className="min-w-0 flex-1"><p className="font-semibold">{title}</p>{message && <p className="mt-1 text-sm leading-6 opacity-80">{message}</p>}</div>{onDismiss && <button type="button" aria-label="Dismiss message" onClick={onDismiss} className="rounded-lg p-1 opacity-60 hover:bg-black/5 hover:opacity-100"><X size={17}/></button>}</div>;
+}
+
+export function ConfirmPanel({ title, message, confirmLabel = 'Delete', pending, onConfirm, onCancel }: { title: string; message: string; confirmLabel?: string; pending?: boolean; onConfirm: () => void; onCancel: () => void }) {
+  return <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/35 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><div className="w-full max-w-md rounded-2xl border border-line bg-white p-6 shadow-2xl"><div className="flex h-11 w-11 items-center justify-center rounded-full bg-red-50 text-red-700"><AlertCircle size={22}/></div><h2 id="confirm-title" className="mt-4 text-xl font-semibold">{title}</h2><p className="mt-2 text-sm leading-6 text-muted">{message}</p><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={onCancel} disabled={pending} className="rounded-xl border border-line px-4 py-2.5 text-sm font-semibold">Cancel</button><button type="button" onClick={onConfirm} disabled={pending} className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{pending ? 'Deleting…' : confirmLabel}</button></div></div></div>;
+}
