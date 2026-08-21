@@ -26,6 +26,20 @@ final class AuthController
         return $this->withCookie($this->auth->refresh((string) ($request->cookies[$name] ?? ''), $request));
     }
 
+    public function forgotPassword(Request $request): array
+    {
+        $input = $request->json();
+        return $this->auth->requestPasswordReset((string) ($input['email'] ?? ''), $request);
+    }
+
+    public function resetPassword(Request $request): array
+    {
+        $input = $request->json();
+        $result = $this->auth->resetPassword((string) ($input['token'] ?? ''), (string) ($input['password'] ?? ''), $request);
+        $this->clearCookie();
+        return $result;
+    }
+
     public function me(Request $request): array
     {
         return ['user' => $request->attributes['identity']];

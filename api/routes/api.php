@@ -8,6 +8,8 @@ $router->add('GET', '/api/v1/health', static fn () => ['status' => 'ok', 'servic
 $router->add('GET', '/api/v1/meta/webhook', [$metaWebhookController, 'verify']);
 $router->add('POST', '/api/v1/meta/webhook', [$metaWebhookController, 'receive']);
 $router->add('POST', '/api/v1/auth/login', [$controller, 'login']);
+$router->add('POST', '/api/v1/auth/forgot-password', [$controller, 'forgotPassword']);
+$router->add('POST', '/api/v1/auth/reset-password', [$controller, 'resetPassword']);
 $router->add('POST', '/api/v1/auth/refresh', [$controller, 'refresh']);
 $router->add('POST', '/api/v1/auth/logout', [$controller, 'logout']);
 $router->add('GET', '/api/v1/auth/me', [$controller, 'me'], [$authenticate]);

@@ -20,6 +20,7 @@ use WhatstheUp\Services\AuthenticationService;
 use WhatstheUp\Services\MetaConnectionService;
 use WhatstheUp\Services\MetaGraphClient;
 use WhatstheUp\Services\MetaWebhookService;
+use WhatstheUp\Services\MailerService;
 use WhatstheUp\Services\OperationsService;
 use WhatstheUp\Security\TokenCipher;
 
@@ -34,7 +35,7 @@ final class App
         $db = Database::connect();
         $router = new Router();
         $audit = new AuditService($db);
-        $auth = new AuthenticationService($db, $audit);
+        $auth = new AuthenticationService($db, $audit, new MailerService());
         $controller = new AuthController($auth);
         $adminController = new AdminController(new AdminService($db, $audit));
         $metaController = new MetaConnectionController(new MetaConnectionService($db, new MetaGraphClient(), new TokenCipher(), $audit));

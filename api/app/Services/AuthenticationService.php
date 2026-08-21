@@ -15,7 +15,7 @@ use WhatstheUp\Support\Uuid;
 
 final class AuthenticationService
 {
-    public function __construct(private readonly PDO $db, private readonly AuditService $audit)
+    public function __construct(private readonly PDO $db, private readonly AuditService $audit, private readonly MailerService $mailer)
     {
     }
 
@@ -96,6 +96,72 @@ final class AuthenticationService
     {
         $this->db->prepare('UPDATE user_sessions SET revoked_at = UTC_TIMESTAMP() WHERE user_id = ? AND revoked_at IS NULL')->execute([$userId]);
         $this->audit->record(null, $userId, 'auth.sessions.revoked_all', 'user', $userId);
+    }
+
+    public function requestPasswordReset(string $email, Request $request): array
+    {
+        $email = mb_strtolower(trim($email));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new HttpException(422, 'Enter a valid email address.', 'validation_failed');
+        }
+        $limit = $this->db->prepare("SELECT COUNT(*) FROM security_logs WHERE event_type = 'password_reset.requested' AND (identifier = ? OR ip_address = ?) AND created_at >= UTC_TIMESTAMP() - INTERVAL 15 MINUTE");
+        $limit->execute([$email, $request->ip]);
+        if ((int) $limit->fetchColumn() >= Env::int('PASSWORD_RESET_MAX_ATTEMPTS', 5)) {
+            throw new HttpException(429, 'Too many reset requests. Try again later.', 'rate_limited');
+        }
+
+        $statement = $this->db->prepare("SELECT id, name, email FROM users WHERE email = ? AND status = 'active' AND deleted_at IS NULL LIMIT 1");
+        $statement->execute([$email]);
+        $user = $statement->fetch();
+        $this->db->prepare('INSERT INTO security_logs (id, user_id, event_type, identifier, ip_address, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())')->execute([Uuid::v4(), $user['id'] ?? null, 'password_reset.requested', $email, $request->ip, '{}']);
+
+        if ($user) {
+            $rawToken = $this->randomToken();
+            $expires = (new DateTimeImmutable())->modify('+' . Env::int('PASSWORD_RESET_TTL', 3600) . ' seconds')->format('Y-m-d H:i:s');
+            $this->db->prepare('UPDATE password_resets SET used_at = UTC_TIMESTAMP() WHERE user_id = ? AND used_at IS NULL')->execute([$user['id']]);
+            $this->db->prepare('INSERT INTO password_resets (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP())')->execute([Uuid::v4(), $user['id'], hash('sha256', $rawToken), $expires]);
+            $frontend = rtrim(Env::get('FRONTEND_URL', '') ?? '', '/');
+            try {
+                $this->mailer->sendPasswordReset($user['email'], $user['name'], $frontend . '/reset-password?token=' . rawurlencode($rawToken));
+            } catch (Throwable $exception) {
+                error_log(json_encode(['level' => 'error', 'message' => 'Password reset email failed', 'exception' => $exception::class]));
+            }
+        }
+        return ['message' => 'If an active account exists for that email, a reset link has been sent.'];
+    }
+
+    public function resetPassword(string $token, string $password, Request $request): array
+    {
+        if (strlen($token) < 32 || strlen($password) < 12) {
+            throw new HttpException(422, 'The reset link is invalid or the password is too short.', 'validation_failed');
+        }
+        $statement = $this->db->prepare("SELECT pr.id, pr.user_id FROM password_resets pr JOIN users u ON u.id = pr.user_id WHERE pr.token_hash = ? AND pr.used_at IS NULL AND pr.expires_at > UTC_TIMESTAMP() AND u.status = 'active' AND u.deleted_at IS NULL LIMIT 1");
+        $statement->execute([hash('sha256', $token)]);
+        $reset = $statement->fetch();
+        if (!$reset) {
+            throw new HttpException(422, 'This reset link is invalid or has expired.', 'invalid_reset_token');
+        }
+
+        $this->db->beginTransaction();
+        try {
+            $use = $this->db->prepare('UPDATE password_resets SET used_at = UTC_TIMESTAMP() WHERE id = ? AND used_at IS NULL');
+            $use->execute([$reset['id']]);
+            if ($use->rowCount() !== 1) {
+                throw new HttpException(422, 'This reset link is invalid or has expired.', 'invalid_reset_token');
+            }
+            $this->db->prepare('UPDATE users SET password_hash = ?, failed_login_attempts = 0, locked_until = NULL WHERE id = ?')->execute([password_hash($password, PASSWORD_DEFAULT), $reset['user_id']]);
+            $this->db->prepare('UPDATE user_sessions SET revoked_at = UTC_TIMESTAMP() WHERE user_id = ? AND revoked_at IS NULL')->execute([$reset['user_id']]);
+            $this->db->prepare('UPDATE password_resets SET used_at = COALESCE(used_at, UTC_TIMESTAMP()) WHERE user_id = ?')->execute([$reset['user_id']]);
+            $this->db->prepare('INSERT INTO security_logs (id, user_id, event_type, identifier, ip_address, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())')->execute([Uuid::v4(), $reset['user_id'], 'password_reset.completed', null, $request->ip, '{}']);
+            $this->db->commit();
+        } catch (Throwable $exception) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $exception;
+        }
+        $this->audit->record(null, $reset['user_id'], 'auth.password_reset', 'user', $reset['user_id'], ['ip' => $request->ip]);
+        return ['message' => 'Your password has been reset. Sign in with your new password.'];
     }
 
     private function createSession(string $userId, Request $request): array
