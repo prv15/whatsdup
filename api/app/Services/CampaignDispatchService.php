@@ -17,7 +17,7 @@ final class CampaignDispatchService
 
     public function dispatch(string $campaignId): array
     {
-        $campaign = $this->db->prepare("SELECT c.id, c.business_id, c.name, t.name template_name, t.language, t.status template_status, pn.meta_phone_number_id, et.ciphertext, et.nonce FROM campaigns c JOIN message_templates t ON t.id = c.template_id JOIN meta_connections mc ON mc.business_id = c.business_id AND mc.status = 'connected' AND mc.deleted_at IS NULL JOIN encrypted_tokens et ON et.id = mc.token_id JOIN waba_accounts wa ON wa.meta_connection_id = mc.id JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.is_default = TRUE AND pn.deleted_at IS NULL WHERE c.id = ? LIMIT 1");
+        $campaign = $this->db->prepare("SELECT c.id, c.business_id, c.name, t.name template_name, t.language, t.status template_status, t.header_type, t.header_media_url, pn.meta_phone_number_id, et.ciphertext, et.nonce FROM campaigns c JOIN message_templates t ON t.id = c.template_id JOIN meta_connections mc ON mc.business_id = c.business_id AND mc.status = 'connected' AND mc.deleted_at IS NULL JOIN encrypted_tokens et ON et.id = mc.token_id JOIN waba_accounts wa ON wa.meta_connection_id = mc.id JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.is_default = TRUE AND pn.deleted_at IS NULL WHERE c.id = ? LIMIT 1");
         $campaign->execute([$campaignId]); $row = $campaign->fetch();
         if (!$row) throw new \RuntimeException('Campaign cannot be dispatched because Meta connection or phone information is unavailable.');
         if ($row['template_status'] !== 'approved') throw new \RuntimeException('Campaign template is no longer approved by Meta.');
@@ -30,7 +30,8 @@ final class CampaignDispatchService
         $markFailed = $this->db->prepare("UPDATE campaign_contacts SET status = 'failed', failure_code = ?, failure_message = ?, updated_at = UTC_TIMESTAMP() WHERE campaign_id = ? AND contact_id = ?");
         foreach ($recipients->fetchAll() as $recipient) {
             try {
-                $result = $this->graph->sendTemplate((string) $row['meta_phone_number_id'], $token, ltrim((string) $recipient['phone_e164'], '+'), (string) $row['template_name'], (string) $row['language']);
+                if ($row['header_type'] === 'image' && empty($row['header_media_url'])) throw new \RuntimeException('Image template has no uploaded header image.');
+                $result = $this->graph->sendTemplate((string) $row['meta_phone_number_id'], $token, ltrim((string) $recipient['phone_e164'], '+'), (string) $row['template_name'], (string) $row['language'], $row['header_type'] === 'image' ? (string) $row['header_media_url'] : null);
                 $messageId = trim((string) ($result['messages'][0]['id'] ?? ''));
                 if ($messageId === '') {
                     throw new \RuntimeException('Meta accepted the request without returning a message ID.');

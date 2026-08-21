@@ -6,6 +6,7 @@ namespace WhatstheUp\Services;
 
 use PDO;
 use Throwable;
+use WhatstheUp\Support\Env;
 use WhatstheUp\Support\HttpException;
 use WhatstheUp\Support\Uuid;
 
@@ -118,9 +119,9 @@ final class OperationsService
 
     public function templates(string $businessId): array
     {
-        $statement = $this->db->prepare('SELECT id, name, language, category, body, status, rejection_reason, created_at, updated_at FROM message_templates WHERE business_id = ? AND deleted_at IS NULL ORDER BY created_at DESC');
+        $statement = $this->db->prepare('SELECT id, name, language, category, header_type, header_media_url, body, status, rejection_reason, created_at, updated_at FROM message_templates WHERE business_id = ? AND deleted_at IS NULL ORDER BY created_at DESC');
         $statement->execute([$businessId]);
-        return array_map(static fn (array $row) => ['id' => $row['id'], 'name' => $row['name'], 'language' => $row['language'], 'category' => $row['category'], 'body' => $row['body'], 'status' => $row['status'], 'rejectionReason' => $row['rejection_reason'], 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at']], $statement->fetchAll());
+        return array_map(static fn (array $row) => ['id' => $row['id'], 'name' => $row['name'], 'language' => $row['language'], 'category' => $row['category'], 'headerType' => $row['header_type'], 'headerMediaUrl' => $row['header_media_url'], 'body' => $row['body'], 'status' => $row['status'], 'rejectionReason' => $row['rejection_reason'], 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at']], $statement->fetchAll());
     }
 
     public function createTemplate(string $businessId, string $userId, array $input): array
@@ -129,11 +130,13 @@ final class OperationsService
         $body = trim((string) ($input['body'] ?? ''));
         $language = trim((string) ($input['language'] ?? 'en_US'));
         $category = (string) ($input['category'] ?? 'marketing');
+        $headerImage = trim((string) ($input['headerImage'] ?? ''));
         if (!preg_match('/^[a-z][a-z0-9_]{1,100}$/', $name) || $body === '' || mb_strlen($body) > 1024 || !preg_match('/^[a-z]{2}_[A-Z]{2}$/', $language) || !in_array($category, ['marketing', 'utility', 'authentication'], true)) {
             throw new HttpException(422, 'Enter a valid template name, language, category and message body.', 'validation_failed');
         }
         $id = Uuid::v4();
-        try { $this->db->prepare("INSERT INTO message_templates (id, business_id, name, language, category, body, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$id, $businessId, $name, $language, $category, $body, $userId]); }
+        $headerMediaUrl = $headerImage !== '' ? $this->storeTemplateImage($businessId, $headerImage) : null;
+        try { $this->db->prepare("INSERT INTO message_templates (id, business_id, name, language, category, header_type, header_media_url, body, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$id, $businessId, $name, $language, $category, $headerMediaUrl !== null ? 'image' : 'none', $headerMediaUrl, $body, $userId]); }
         catch (Throwable $exception) { throw new HttpException(409, 'A template with this name and language already exists.', 'template_exists'); }
         $this->audit->record($businessId, $userId, 'template.created', 'message_template', $id, ['name' => $name]);
         return $this->templateById($businessId, $id);
@@ -217,6 +220,28 @@ final class OperationsService
     {
         foreach ($this->templates($businessId) as $template) { if ($template['id'] === $id) return $template; }
         throw new HttpException(404, 'Template not found.', 'not_found');
+    }
+
+    private function storeTemplateImage(string $businessId, string $dataUri): string
+    {
+        if (!preg_match('#^data:(image/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$#', $dataUri, $matches)) {
+            throw new HttpException(422, 'Upload a JPEG, PNG or WebP image.', 'invalid_template_image');
+        }
+        $binary = base64_decode($matches[2], true);
+        if ($binary === false || strlen($binary) > 5 * 1024 * 1024 || @getimagesizefromstring($binary) === false) {
+            throw new HttpException(422, 'The template image must be a valid image no larger than 5 MB.', 'invalid_template_image');
+        }
+        $extension = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'][$matches[1]];
+        $relative = 'uploads/templates/' . preg_replace('/[^a-zA-Z0-9-]/', '', $businessId);
+        $directory = dirname(__DIR__, 2) . '/public/' . $relative;
+        if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)) {
+            throw new \RuntimeException('Template media directory could not be created.');
+        }
+        $file = Uuid::v4() . '.' . $extension;
+        if (file_put_contents($directory . '/' . $file, $binary, LOCK_EX) === false) {
+            throw new \RuntimeException('Template image could not be stored.');
+        }
+        return rtrim(Env::get('APP_URL', '') ?? '', '/') . '/' . $relative . '/' . $file;
     }
 
     private function formatContact(array $row): array

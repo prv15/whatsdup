@@ -38,11 +38,15 @@ final class MetaGraphClient
         return $this->request('GET', '/' . rawurlencode($wabaId) . '/message_templates', $token, ['fields' => 'id,name,status,language,category,components', 'limit' => '250']);
     }
 
-    public function sendTemplate(string $phoneNumberId, string $token, string $to, string $templateName, string $language): array
+    public function sendTemplate(string $phoneNumberId, string $token, string $to, string $templateName, string $language, ?string $headerImageUrl = null): array
     {
+        $template = ['name' => $templateName, 'language' => ['code' => $language]];
+        if ($headerImageUrl !== null) {
+            $template['components'] = [['type' => 'header', 'parameters' => [['type' => 'image', 'image' => ['link' => $headerImageUrl]]]]];
+        }
         return $this->request('POST', '/' . rawurlencode($phoneNumberId) . '/messages', $token, [], [
             'messaging_product' => 'whatsapp', 'to' => $to, 'type' => 'template',
-            'template' => ['name' => $templateName, 'language' => ['code' => $language]],
+            'template' => $template,
         ]);
     }
 
