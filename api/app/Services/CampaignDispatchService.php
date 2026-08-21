@@ -31,15 +31,19 @@ final class CampaignDispatchService
         foreach ($recipients->fetchAll() as $recipient) {
             try {
                 $result = $this->graph->sendTemplate((string) $row['meta_phone_number_id'], $token, ltrim((string) $recipient['phone_e164'], '+'), (string) $row['template_name'], (string) $row['language']);
-                $messageId = (string) ($result['messages'][0]['id'] ?? '');
-                $markSent->execute([$messageId ?: null, $campaignId, $recipient['contact_id']]); $sent++;
+                $messageId = trim((string) ($result['messages'][0]['id'] ?? ''));
+                if ($messageId === '') {
+                    throw new \RuntimeException('Meta accepted the request without returning a message ID.');
+                }
+                $markSent->execute([$messageId, $campaignId, $recipient['contact_id']]); $sent++;
             } catch (HttpException $exception) {
                 $markFailed->execute([$exception->codeName, mb_substr($exception->getMessage(), 0, 500), $campaignId, $recipient['contact_id']]); $failed++;
             } catch (Throwable $exception) {
                 $markFailed->execute(['dispatch_error', 'Message could not be dispatched.', $campaignId, $recipient['contact_id']]); $failed++;
             }
         }
-        $this->db->prepare("UPDATE campaigns SET status = 'completed', completed_at = UTC_TIMESTAMP(), delivered_count = 0, read_count = 0, failed_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status = 'failed'), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$campaignId, $campaignId]);
+        $status = $sent === 0 && $failed > 0 ? 'failed' : 'completed';
+        $this->db->prepare("UPDATE campaigns SET status = ?, completed_at = UTC_TIMESTAMP(), delivered_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status IN ('delivered','read')), read_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status = 'read'), failed_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status = 'failed'), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$status, $campaignId, $campaignId, $campaignId, $campaignId]);
         $this->audit->record((string) $row['business_id'], null, 'campaign.dispatched', 'campaign', $campaignId, ['sent' => $sent, 'failed' => $failed]);
         return ['sent' => $sent, 'failed' => $failed];
     }

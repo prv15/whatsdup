@@ -8,9 +8,14 @@ use WhatstheUp\Support\Env;
 use WhatstheUp\Support\HttpException;
 use WhatstheUp\Support\Request;
 use WhatstheUp\Support\Response;
+use WhatstheUp\Services\MetaWebhookService;
 
 final class MetaWebhookController
 {
+    public function __construct(private readonly MetaWebhookService $webhooks)
+    {
+    }
+
     public function verify(Request $request): never
     {
         $mode = (string) ($request->query['hub_mode'] ?? $request->query['hub.mode'] ?? '');
@@ -34,7 +39,7 @@ final class MetaWebhookController
         if (!hash_equals($expected, $signature)) {
             throw new HttpException(403, 'Webhook signature is not valid.', 'webhook_signature_invalid');
         }
-        $request->json();
-        return ['received' => true];
+        $processed = $this->webhooks->process($request->json());
+        return ['received' => true, 'processed' => $processed];
     }
 }

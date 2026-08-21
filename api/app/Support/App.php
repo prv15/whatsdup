@@ -19,6 +19,7 @@ use WhatstheUp\Services\AuditService;
 use WhatstheUp\Services\AuthenticationService;
 use WhatstheUp\Services\MetaConnectionService;
 use WhatstheUp\Services\MetaGraphClient;
+use WhatstheUp\Services\MetaWebhookService;
 use WhatstheUp\Services\OperationsService;
 use WhatstheUp\Security\TokenCipher;
 
@@ -37,7 +38,7 @@ final class App
         $controller = new AuthController($auth);
         $adminController = new AdminController(new AdminService($db, $audit));
         $metaController = new MetaConnectionController(new MetaConnectionService($db, new MetaGraphClient(), new TokenCipher(), $audit));
-        $metaWebhookController = new MetaWebhookController();
+        $metaWebhookController = new MetaWebhookController(new MetaWebhookService($db));
         $operationsController = new OperationsController(new OperationsService($db, $audit));
         $authenticate = new Authenticate($auth);
         $permission = static fn (string $name) => new RequirePermission($name);
