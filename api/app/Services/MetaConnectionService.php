@@ -168,6 +168,29 @@ final class MetaConnectionService
         return $this->status($businessId);
     }
 
+    public function verifyBusinessAccess(string $businessId, string $userId): array
+    {
+        $statement = $this->db->prepare("SELECT mc.id, et.ciphertext, et.nonce
+            FROM meta_connections mc
+            JOIN encrypted_tokens et ON et.id = mc.token_id
+            WHERE mc.business_id = ? AND mc.deleted_at IS NULL LIMIT 1");
+        $statement->execute([$businessId]);
+        $connection = $statement->fetch();
+        if (!$connection) {
+            throw new HttpException(404, 'Connect a Meta account before verifying business access.', 'meta_connection_not_found');
+        }
+        $token = $this->cipher->decrypt((string) $connection['ciphertext'], (string) $connection['nonce']);
+        $response = $this->graph->getBusinesses($token);
+        $businesses = array_values(array_filter((array) ($response['data'] ?? []), static fn (mixed $business): bool => is_array($business) && isset($business['id'])));
+        $this->db->prepare('UPDATE meta_connections SET last_tested_at = UTC_TIMESTAMP(), last_error_code = NULL, last_error_message = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$connection['id']]);
+        $this->audit->record($businessId, $userId, 'meta.business_access.verified', 'meta_connection', (string) $connection['id'], ['business_count' => count($businesses)]);
+        return [
+            'verified' => true,
+            'businessCount' => count($businesses),
+            'message' => 'Meta business access verified successfully. The business_management API call was completed.',
+        ];
+    }
+
     public function syncTemplates(string $businessId, string $userId): array
     {
         $connection = $this->db->prepare("SELECT et.ciphertext, et.nonce, wa.meta_waba_id FROM meta_connections mc JOIN encrypted_tokens et ON et.id = mc.token_id JOIN waba_accounts wa ON wa.meta_connection_id = mc.id WHERE mc.business_id = ? AND mc.status = 'connected' AND mc.deleted_at IS NULL LIMIT 1");

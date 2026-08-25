@@ -35,6 +35,12 @@ final class MetaConnectionController
         return ['data' => $this->meta->reconnect($identity['business']['id'], $identity['id'], $request->json())];
     }
 
+    public function verifyBusinessAccess(Request $request): array
+    {
+        $identity = $request->attributes['identity'];
+        return ['data' => $this->meta->verifyBusinessAccess($identity['business']['id'], $identity['id'])];
+    }
+
     public function syncTemplates(Request $request): array
     {
         $identity = $request->attributes['identity'];
