@@ -23,6 +23,14 @@ final class MetaGraphClient
         return $this->request('GET', '/' . rawurlencode($wabaId), $token, ['fields' => 'id,name,currency,timezone_id,account_review_status,owner_business_info']);
     }
 
+    public function getBusinesses(string $token): array
+    {
+        return $this->request('GET', '/me/businesses', $token, [
+            'fields' => 'id,name,verification_status',
+            'limit' => '100',
+        ]);
+    }
+
     public function getPhone(string $phoneId, string $token): array
     {
         return $this->request('GET', '/' . rawurlencode($phoneId), $token, ['fields' => 'id,display_phone_number,verified_name,quality_rating,name_status']);

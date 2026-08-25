@@ -35,6 +35,7 @@ $router->add('POST', '/api/v1/campaigns/{id}/launch', [$operationsController, 'l
 $router->add('GET', '/api/v1/meta/configuration', [$metaController, 'configuration'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('GET', '/api/v1/meta/connection', [$metaController, 'status'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/connection/complete', [$metaController, 'complete'], [$authenticate, $scope('business'), $permission('settings.manage')]);
+$router->add('POST', '/api/v1/meta/connection/reconnect', [$metaController, 'reconnect'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/templates/sync', [$metaController, 'syncTemplates'], [$authenticate, $scope('business'), $permission('templates.sync')]);
 $router->add('GET', '/api/v1/admin/dashboard', [$adminController, 'dashboard'], [$authenticate, $permission('admin.dashboard.view')]);
 $router->add('GET', '/api/v1/admin/businesses', [$adminController, 'businesses'], [$authenticate, $permission('businesses.view')]);

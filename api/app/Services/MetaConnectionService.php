@@ -74,6 +74,11 @@ final class MetaConnectionService
         if ($token === '') {
             throw new HttpException(422, 'Meta did not issue an access token.', 'meta_token_missing');
         }
+        // Embedded Signup requests business_management so the platform can
+        // discover the portfolios the administrator explicitly authorized.
+        // Performing this read also provides Meta's required App Review test
+        // call for the permission before the selected WhatsApp assets are used.
+        $this->graph->getBusinesses($token);
         $waba = $this->graph->getWaba($wabaId, $token);
         $phone = $this->graph->getPhone($phoneId, $token);
         if ((string) ($waba['id'] ?? '') !== $wabaId || (string) ($phone['id'] ?? '') !== $phoneId) {
@@ -103,6 +108,63 @@ final class MetaConnectionService
             $this->db->prepare("UPDATE meta_connections SET status = 'webhook_error', last_error_code = ?, last_error_message = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$exception->codeName, $exception->getMessage(), $connectionId]);
         }
         $this->audit->record($businessId, $userId, 'meta.connection.completed', 'meta_connection', $connectionId, ['waba_id' => $wabaId, 'phone_number_id' => $phoneId]);
+        return $this->status($businessId);
+    }
+
+    public function reconnect(string $businessId, string $userId, array $input): array
+    {
+        $config = $this->configuration();
+        if (!$config['enabled']) {
+            throw new HttpException(503, 'Meta Embedded Signup is not configured by the platform administrator.', 'meta_not_configured');
+        }
+        $code = trim((string) ($input['code'] ?? ''));
+        $wabaId = trim((string) ($input['wabaId'] ?? ''));
+        $phoneId = trim((string) ($input['phoneNumberId'] ?? ''));
+        if ($code === '' || !preg_match('/^\d{5,30}$/', $wabaId) || !preg_match('/^\d{5,30}$/', $phoneId)) {
+            throw new HttpException(422, 'Meta did not return the required signup identifiers.', 'meta_signup_incomplete');
+        }
+        $statement = $this->db->prepare("SELECT mc.id, mc.token_id, wa.id waba_local_id, wa.meta_waba_id, pn.id phone_local_id, pn.meta_phone_number_id
+            FROM meta_connections mc
+            JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+            JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.is_default = TRUE AND pn.deleted_at IS NULL
+            WHERE mc.business_id = ? AND mc.deleted_at IS NULL LIMIT 1");
+        $statement->execute([$businessId]);
+        $existing = $statement->fetch();
+        if (!$existing) {
+            throw new HttpException(404, 'No Meta connection exists for this business.', 'meta_connection_not_found');
+        }
+        if ((string) $existing['meta_waba_id'] !== $wabaId || (string) $existing['meta_phone_number_id'] !== $phoneId) {
+            throw new HttpException(422, 'Select the same WhatsApp account and phone number currently connected to this workspace.', 'meta_reconnect_asset_mismatch');
+        }
+        $exchange = $this->graph->exchangeCode($code);
+        $token = (string) ($exchange['access_token'] ?? '');
+        if ($token === '') {
+            throw new HttpException(422, 'Meta did not issue an access token.', 'meta_token_missing');
+        }
+        $this->graph->getBusinesses($token);
+        $waba = $this->graph->getWaba($wabaId, $token);
+        $phone = $this->graph->getPhone($phoneId, $token);
+        $encrypted = $this->cipher->encrypt($token);
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('UPDATE encrypted_tokens SET ciphertext = ?, nonce = ?, key_version = ?, metadata = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ?')->execute([$encrypted['ciphertext'], $encrypted['nonce'], $encrypted['keyVersion'], json_encode(['token_type' => $exchange['token_type'] ?? 'bearer'], JSON_THROW_ON_ERROR), $existing['token_id'], $businessId]);
+            $this->db->prepare("UPDATE meta_connections SET meta_business_id = ?, app_id = ?, status = 'connecting', connected_by = ?, connected_at = UTC_TIMESTAMP(), last_synced_at = UTC_TIMESTAMP(), last_error_code = NULL, last_error_message = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([(string) ($waba['owner_business_info']['id'] ?? '') ?: null, Env::get('META_APP_ID'), $userId, $existing['id']]);
+            $this->db->prepare('UPDATE waba_accounts SET name = ?, currency = ?, timezone_id = ?, review_status = ?, status = ?, last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$waba['name'] ?? null, $waba['currency'] ?? null, isset($waba['timezone_id']) ? (string) $waba['timezone_id'] : null, $waba['account_review_status'] ?? null, 'active', $existing['waba_local_id']]);
+            $this->db->prepare("UPDATE whatsapp_phone_numbers SET display_phone_number = ?, verified_name = ?, quality_rating = ?, name_status = ?, connection_status = 'connected', last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$phone['display_phone_number'] ?? null, $phone['verified_name'] ?? null, $phone['quality_rating'] ?? null, $phone['name_status'] ?? null, $existing['phone_local_id']]);
+            $this->db->commit();
+        } catch (Throwable $exception) {
+            $this->db->rollBack();
+            throw $exception;
+        }
+        try {
+            $this->graph->subscribeWaba($wabaId, $token);
+            $this->db->prepare("UPDATE webhook_subscriptions SET status = 'active', subscribed_at = UTC_TIMESTAMP(), last_verified_at = UTC_TIMESTAMP(), error_message = NULL, updated_at = UTC_TIMESTAMP() WHERE waba_account_id = ?")->execute([$existing['waba_local_id']]);
+            $this->db->prepare("UPDATE meta_connections SET status = 'connected', updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$existing['id']]);
+        } catch (HttpException $exception) {
+            $this->db->prepare("UPDATE webhook_subscriptions SET status = 'failed', error_message = ?, updated_at = UTC_TIMESTAMP() WHERE waba_account_id = ?")->execute([$exception->getMessage(), $existing['waba_local_id']]);
+            $this->db->prepare("UPDATE meta_connections SET status = 'webhook_error', last_error_code = ?, last_error_message = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$exception->codeName, $exception->getMessage(), $existing['id']]);
+        }
+        $this->audit->record($businessId, $userId, 'meta.connection.reconnected', 'meta_connection', (string) $existing['id'], ['waba_id' => $wabaId, 'phone_number_id' => $phoneId]);
         return $this->status($businessId);
     }
 
