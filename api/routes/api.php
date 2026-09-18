@@ -36,6 +36,7 @@ $router->add('GET', '/api/v1/meta/configuration', [$metaController, 'configurati
 $router->add('GET', '/api/v1/meta/connection', [$metaController, 'status'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/connection/complete', [$metaController, 'complete'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/connection/reconnect', [$metaController, 'reconnect'], [$authenticate, $scope('business'), $permission('settings.manage')]);
+$router->add('POST', '/api/v1/meta/connection/test', [$metaController, 'connectTest'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/connection/verify-business-access', [$metaController, 'verifyBusinessAccess'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/templates/sync', [$metaController, 'syncTemplates'], [$authenticate, $scope('business'), $permission('templates.sync')]);
 $router->add('GET', '/api/v1/admin/dashboard', [$adminController, 'dashboard'], [$authenticate, $permission('admin.dashboard.view')]);

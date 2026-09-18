@@ -13,9 +13,16 @@ final class MetaConnectionController
     {
     }
 
-    public function configuration(): array
+    public function configuration(Request $request): array
     {
-        return ['data' => $this->meta->configuration()];
+        $businessId = $request->attributes['identity']['business']['id'];
+        return ['data' => $this->meta->configuration() + ['testConnection' => \WhatstheUp\Services\MetaTestConnectionPolicy::configuration($businessId)]];
+    }
+
+    public function connectTest(Request $request): array
+    {
+        $identity = $request->attributes['identity'];
+        return ['data' => $this->meta->connectTest($identity['business']['id'], $identity['id'], $request->json())];
     }
 
     public function status(Request $request): array

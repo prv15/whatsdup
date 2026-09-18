@@ -168,6 +168,76 @@ final class MetaConnectionService
         return $this->status($businessId);
     }
 
+    public function connectTest(string $businessId, string $userId, array $input): array
+    {
+        $config = MetaTestConnectionPolicy::validate($businessId, $input);
+        if (!str_starts_with(Env::get('APP_URL', '') ?? '', 'https://')) {
+            throw new HttpException(422, 'Test credentials require an HTTPS application URL.', 'meta_https_required');
+        }
+        $token = $config['accessToken'];
+        $wabaId = $config['wabaId'];
+        $phoneId = $config['phoneNumberId'];
+        // Test tokens need WhatsApp asset access, not /me/businesses access.
+        // Do not include upstream error messages here: they may contain credentials.
+        try {
+            $waba = $this->graph->getWaba($wabaId, $token);
+            $phones = $this->graph->getWabaPhones($wabaId, $token);
+            $phone = null;
+            foreach ($phones['data'] ?? [] as $candidate) {
+                if ((string) ($candidate['id'] ?? '') === $phoneId) $phone = $candidate;
+            }
+            if ((string) ($waba['id'] ?? '') !== $wabaId || $phone === null) {
+                throw new HttpException(422, 'Phone is not in the configured WABA.', 'meta_asset_mismatch');
+            }
+            $this->graph->getTemplates($wabaId, $token);
+        } catch (HttpException $exception) {
+            throw new HttpException(422, 'Meta could not validate the configured test account and phone. Generate a fresh token for this app with WhatsApp account access.', 'meta_test_validation_failed');
+        }
+        $encrypted = $this->cipher->encrypt($token);
+        $this->db->beginTransaction();
+        try {
+            // Lock the tenant before replacing its single existing connection.
+            $lock = $this->db->prepare('SELECT id FROM businesses WHERE id = ? FOR UPDATE');
+            $lock->execute([$businessId]);
+            $active = $this->db->prepare("SELECT id FROM campaigns WHERE business_id = ? AND status IN ('queued','scheduled','processing','paused') LIMIT 1 FOR UPDATE");
+            $active->execute([$businessId]);
+            if ($active->fetch()) throw new HttpException(409, 'Finish or cancel queued, scheduled, processing and paused campaigns before replacing the test connection.', 'meta_campaigns_active');
+            $query = $this->db->prepare('SELECT mc.id, mc.token_id, wa.id waba_local_id, wa.meta_waba_id, pn.id phone_local_id FROM meta_connections mc JOIN waba_accounts wa ON wa.meta_connection_id = mc.id JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL WHERE mc.business_id = ? AND mc.deleted_at IS NULL FOR UPDATE');
+            $query->execute([$businessId]);
+            $rows = $query->fetchAll();
+            if (count($rows) !== 1) throw new HttpException(409, 'Test repair requires exactly one existing connection and phone. Ask the administrator to inspect this workspace.', 'meta_test_connection_ambiguous');
+            $existing = $rows[0];
+            $duplicate = $this->db->prepare('SELECT id FROM waba_accounts WHERE meta_waba_id = ? AND id <> ?');
+            $duplicate->execute([$wabaId, $existing['waba_local_id']]);
+            $duplicatePhone = $this->db->prepare('SELECT id FROM whatsapp_phone_numbers WHERE meta_phone_number_id = ? AND id <> ?');
+            $duplicatePhone->execute([$phoneId, $existing['phone_local_id']]);
+            if ($duplicate->fetch() || $duplicatePhone->fetch()) throw new HttpException(409, 'These test assets are already assigned to another connection.', 'meta_test_assets_in_use');
+            $this->db->prepare('UPDATE encrypted_tokens SET ciphertext = ?, nonce = ?, key_version = ?, expires_at = NULL, metadata = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ?')->execute([$encrypted['ciphertext'], $encrypted['nonce'], $encrypted['keyVersion'], json_encode(['source' => 'dashboard_test_token'], JSON_THROW_ON_ERROR), $existing['token_id'], $businessId]);
+            $this->db->prepare("UPDATE meta_connections SET meta_business_id = ?, app_id = ?, status = 'connecting', connected_by = ?, connected_at = UTC_TIMESTAMP(), last_tested_at = UTC_TIMESTAMP(), last_error_code = NULL, last_error_message = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$waba['owner_business_info']['id'] ?? null, Env::get('META_APP_ID'), $userId, $existing['id']]);
+            $this->db->prepare("UPDATE waba_accounts SET meta_waba_id = ?, name = ?, currency = ?, review_status = ?, last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$wabaId, $waba['name'] ?? null, $waba['currency'] ?? null, $waba['account_review_status'] ?? null, $existing['waba_local_id']]);
+            $this->db->prepare("UPDATE whatsapp_phone_numbers SET meta_phone_number_id = ?, display_phone_number = ?, verified_name = ?, quality_rating = ?, name_status = NULL, registration_status = NULL, connection_status = 'connected', is_default = TRUE, last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$phoneId, $phone['display_phone_number'] ?? null, $phone['verified_name'] ?? null, $phone['quality_rating'] ?? null, $existing['phone_local_id']]);
+            if ((string) $existing['meta_waba_id'] !== $wabaId) {
+                // Keep rows referenced by campaign history, but never reuse old approvals.
+                $this->db->prepare("UPDATE message_templates SET status = 'draft', meta_template_id = NULL, updated_at = UTC_TIMESTAMP() WHERE business_id = ?")->execute([$businessId]);
+            }
+            $this->db->prepare("UPDATE webhook_subscriptions SET status = 'pending', subscribed_at = NULL, last_verified_at = NULL, error_message = NULL, updated_at = UTC_TIMESTAMP() WHERE waba_account_id = ?")->execute([$existing['waba_local_id']]);
+            $this->audit->record($businessId, $userId, 'meta.test_connection.replaced', 'meta_connection', (string) $existing['id'], ['previous_waba_id' => $existing['meta_waba_id'], 'waba_id' => $wabaId, 'phone_number_id' => $phoneId]);
+            $this->db->commit();
+        } catch (Throwable $exception) {
+            $this->db->rollBack();
+            throw $exception;
+        }
+        try {
+            $this->graph->subscribeWaba($wabaId, $token);
+            $this->db->prepare("UPDATE webhook_subscriptions SET status = 'active', subscribed_at = UTC_TIMESTAMP(), last_verified_at = UTC_TIMESTAMP() WHERE waba_account_id = ?")->execute([$existing['waba_local_id']]);
+            $this->db->prepare("UPDATE meta_connections SET status = 'connected', updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$existing['id']]);
+        } catch (HttpException $exception) {
+            $this->db->prepare("UPDATE webhook_subscriptions SET status = 'failed', error_message = 'Test webhook subscription failed.' WHERE waba_account_id = ?")->execute([$existing['waba_local_id']]);
+            $this->db->prepare("UPDATE meta_connections SET status = 'webhook_error', last_error_code = 'meta_test_webhook_failed', last_error_message = 'Test token saved, but webhook subscription failed. Check token access and retry test setup.' WHERE id = ?")->execute([$existing['id']]);
+        }
+        return $this->status($businessId);
+    }
+
     public function verifyBusinessAccess(string $businessId, string $userId): array
     {
         $statement = $this->db->prepare("SELECT mc.id, et.ciphertext, et.nonce

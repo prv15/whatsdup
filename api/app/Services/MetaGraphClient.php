@@ -46,6 +46,11 @@ final class MetaGraphClient
         return $this->request('GET', '/' . rawurlencode($wabaId) . '/message_templates', $token, ['fields' => 'id,name,status,language,category,components', 'limit' => '250']);
     }
 
+    public function getWabaPhones(string $wabaId, string $token): array
+    {
+        return $this->request('GET', '/' . rawurlencode($wabaId) . '/phone_numbers', $token, ['fields' => 'id,display_phone_number,verified_name,quality_rating', 'limit' => '100']);
+    }
+
     public function sendTemplate(string $phoneNumberId, string $token, string $to, string $templateName, string $language, ?string $headerImageUrl = null): array
     {
         $template = ['name' => $templateName, 'language' => ['code' => $language]];

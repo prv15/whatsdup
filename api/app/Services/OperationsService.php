@@ -281,6 +281,12 @@ final class OperationsService
         $status = $row['scheduled_at'] !== null && strtotime($row['scheduled_at']) > time() ? 'scheduled' : 'queued';
         $this->db->beginTransaction();
         try {
+            // Serialize launch with administrative sender replacement and recheck approvals.
+            $lock = $this->db->prepare('SELECT id FROM businesses WHERE id = ? FOR UPDATE');
+            $lock->execute([$businessId]);
+            $ready = $this->db->prepare("SELECT c.id FROM campaigns c JOIN message_templates t ON t.id = c.template_id JOIN meta_connections mc ON mc.business_id = c.business_id WHERE c.id = ? AND c.business_id = ? AND c.status = 'draft' AND t.status = 'approved' AND mc.status = 'connected' AND mc.deleted_at IS NULL FOR UPDATE");
+            $ready->execute([$campaignId, $businessId]);
+            if (!$ready->fetchColumn()) throw new HttpException(409, 'Campaign or sender changed. Refresh and verify the approved template before launching.', 'campaign_not_ready');
             $this->db->prepare("UPDATE campaigns SET status = ?, launched_at = IF(? = 'queued', UTC_TIMESTAMP(), NULL), updated_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'draft'")->execute([$status, $status, $campaignId]);
             $this->db->prepare("INSERT INTO queue_jobs (business_id, queue, job_type, payload, idempotency_key, trace_id, status, priority, attempts, max_attempts, available_at, created_at, updated_at) VALUES (?, 'campaigns', 'campaign.dispatch', ?, ?, ?, 'ready', 100, 0, 5, COALESCE((SELECT scheduled_at FROM campaigns WHERE id = ?), UTC_TIMESTAMP()), UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$businessId, json_encode(['campaign_id' => $campaignId], JSON_THROW_ON_ERROR), 'campaign-dispatch:' . $campaignId, Uuid::v4(), $campaignId]);
             $this->audit->record($businessId, $userId, 'campaign.launched', 'campaign', $campaignId, ['status' => $status]);

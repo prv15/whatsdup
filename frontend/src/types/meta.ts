@@ -1,4 +1,4 @@
-export interface MetaConfiguration { enabled: boolean; appId: string; configId: string; graphVersion: string; missing: string[]; requiresHttps: boolean }
+export interface MetaConfiguration { enabled: boolean; appId: string; configId: string; graphVersion: string; missing: string[]; requiresHttps: boolean; testConnection?: { wabaId: string; phoneNumberId: string } | null }
 export interface MetaConnectionStatus {
   status: 'not_connected' | 'connecting' | 'connected' | 'action_required' | 'verification_required' | 'token_invalid' | 'restricted' | 'disconnected' | 'webhook_error';
   metaBusinessId?: string | null; connectedAt: string | null; lastSyncedAt: string | null; lastTestedAt: string | null;
