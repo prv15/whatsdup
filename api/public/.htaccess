@@ -1,7 +1,25 @@
-Options -Indexes
-RewriteEngine On
+<IfModule mod_rewrite.c>
+    RewriteEngine On
 
-# Serve real files directly; send every API route to the front controller.
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^ index.php [L]
+    # Pass Authorization header to PHP (Crucial for FastCGI / PHP-FPM / DirectAdmin / cPanel)
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+    <IfModule mod_authz_core.c>
+        CGIPassAuth On
+    </IfModule>
+
+    # Handle CORS preflight headers if mod_headers is enabled
+    <IfModule mod_headers.c>
+        Header set Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, Accept, Origin"
+        Header set Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    </IfModule>
+
+    # Redirect Trailing Slashes If Not A Folder...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_URI} (.+)/$
+    RewriteRule ^ %1 [L,R=301]
+
+    # Send Requests To Front Controller (index.php)...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L]
+</IfModule>

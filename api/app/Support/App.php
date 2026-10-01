@@ -10,6 +10,7 @@ use WhatstheUp\Controllers\Api\V1\AuthController;
 use WhatstheUp\Controllers\Api\V1\AdminController;
 use WhatstheUp\Controllers\Api\V1\MetaConnectionController;
 use WhatstheUp\Controllers\Api\V1\MetaWebhookController;
+use WhatstheUp\Controllers\Api\V1\InboxController;
 use WhatstheUp\Controllers\Api\V1\OperationsController;
 use WhatstheUp\Middleware\Authenticate;
 use WhatstheUp\Middleware\RequirePermission;
@@ -20,8 +21,10 @@ use WhatstheUp\Services\AuthenticationService;
 use WhatstheUp\Services\MetaConnectionService;
 use WhatstheUp\Services\MetaGraphClient;
 use WhatstheUp\Services\MetaWebhookService;
+use WhatstheUp\Services\InboxService;
 use WhatstheUp\Services\MailerService;
 use WhatstheUp\Services\OperationsService;
+use WhatstheUp\Services\QuotaService;
 use WhatstheUp\Security\TokenCipher;
 
 final class App
@@ -38,9 +41,13 @@ final class App
         $auth = new AuthenticationService($db, $audit, new MailerService());
         $controller = new AuthController($auth);
         $adminController = new AdminController(new AdminService($db, $audit));
-        $metaController = new MetaConnectionController(new MetaConnectionService($db, new MetaGraphClient(), new TokenCipher(), $audit));
-        $metaWebhookController = new MetaWebhookController(new MetaWebhookService($db));
-        $operationsController = new OperationsController(new OperationsService($db, $audit));
+        $metaGraphClient = new MetaGraphClient();
+        $tokenCipher = new TokenCipher();
+        $metaController = new MetaConnectionController(new MetaConnectionService($db, $metaGraphClient, $tokenCipher, $audit));
+        $metaWebhookController = new MetaWebhookController(new MetaWebhookService($db), $db);
+        $quota = new QuotaService($db);
+        $operationsController = new OperationsController(new OperationsService($db, $audit, $quota));
+        $inboxController = new InboxController(new InboxService($db, $metaGraphClient, $tokenCipher, $audit));
         $authenticate = new Authenticate($auth);
         $permission = static fn (string $name) => new RequirePermission($name);
         $scope = static fn (string $name) => new RequireScope($name);
@@ -73,14 +80,14 @@ final class App
     {
         $origin = $request->headers['origin'] ?? null;
         $allowed = array_filter(array_map('trim', explode(',', Env::get('CORS_ALLOWED_ORIGINS', '') ?? '')));
-        if ($origin !== null && !in_array($origin, $allowed, true)) {
+        if ($origin !== null && !$this->isOriginAllowed($origin, $allowed)) {
             throw new HttpException(403, 'Origin is not allowed.', 'cors_denied');
         }
         if ($origin !== null) {
             header("Access-Control-Allow-Origin: {$origin}");
             header('Vary: Origin');
             header('Access-Control-Allow-Credentials: true');
-            header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Requested-With');
+            header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Requested-With, Accept, Origin');
             header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
             header('Access-Control-Max-Age: 600');
         }
@@ -88,5 +95,26 @@ final class App
         header('Referrer-Policy: strict-origin-when-cross-origin');
         header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
         header('Cache-Control: no-store');
+    }
+
+    private function isOriginAllowed(string $origin, array $allowed): bool
+    {
+        if (empty($allowed) || in_array('*', $allowed, true)) {
+            return true;
+        }
+        $normalizedOrigin = rtrim($origin, '/');
+        foreach ($allowed as $pattern) {
+            $normalizedPattern = rtrim($pattern, '/');
+            if ($normalizedPattern === $normalizedOrigin) {
+                return true;
+            }
+            if (str_contains($normalizedPattern, '*')) {
+                $regex = '#^' . str_replace('\*', '[a-zA-Z0-9\-_]+', preg_quote($normalizedPattern, '#')) . '$#i';
+                if (preg_match($regex, $normalizedOrigin)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

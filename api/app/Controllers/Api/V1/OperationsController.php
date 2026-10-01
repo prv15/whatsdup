@@ -31,4 +31,5 @@ final class OperationsController
     public function updateCampaign(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->updateCampaign($identity['business']['id'], $identity['id'], (string) ($request->attributes['route']['id'] ?? ''), $request->json())]; }
     public function deleteCampaign(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->deleteCampaign($identity['business']['id'], $identity['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
     public function launchCampaign(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->launchCampaign($identity['business']['id'], $identity['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
+    public function campaignRecipients(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->campaignRecipients($identity['business']['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
 }

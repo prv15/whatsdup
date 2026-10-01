@@ -51,15 +51,40 @@ final class MetaGraphClient
         return $this->request('GET', '/' . rawurlencode($wabaId) . '/phone_numbers', $token, ['fields' => 'id,display_phone_number,verified_name,quality_rating', 'limit' => '100']);
     }
 
-    public function sendTemplate(string $phoneNumberId, string $token, string $to, string $templateName, string $language, ?string $headerImageUrl = null): array
+    public function sendTemplate(string $phoneNumberId, string $token, string $to, string $templateName, string $language, ?string $headerImageUrl = null, array $bodyParameters = []): array
     {
         $template = ['name' => $templateName, 'language' => ['code' => $language]];
-        if ($headerImageUrl !== null) {
-            $template['components'] = [['type' => 'header', 'parameters' => [['type' => 'image', 'image' => ['link' => $headerImageUrl]]]]];
+        $components = [];
+        if ($headerImageUrl !== null && $headerImageUrl !== '') {
+            $components[] = ['type' => 'header', 'parameters' => [['type' => 'image', 'image' => ['link' => $headerImageUrl]]]];
+        }
+        if (!empty($bodyParameters)) {
+            $parameters = [];
+            foreach ($bodyParameters as $param) {
+                $parameters[] = ['type' => 'text', 'text' => (string) $param];
+            }
+            $components[] = ['type' => 'body', 'parameters' => $parameters];
+        }
+        if (!empty($components)) {
+            $template['components'] = $components;
         }
         return $this->request('POST', '/' . rawurlencode($phoneNumberId) . '/messages', $token, [], [
             'messaging_product' => 'whatsapp', 'to' => $to, 'type' => 'template',
             'template' => $template,
+        ]);
+    }
+
+    public function sendText(string $phoneNumberId, string $token, string $to, string $text, bool $previewUrl = false): array
+    {
+        return $this->request('POST', '/' . rawurlencode($phoneNumberId) . '/messages', $token, [], [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $to,
+            'type' => 'text',
+            'text' => [
+                'preview_url' => $previewUrl,
+                'body' => $text,
+            ],
         ]);
     }
 

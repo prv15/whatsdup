@@ -2,3 +2,9 @@
 *.tsbuildinfo
 .idea/
 .vscode/
+
+# Local archives and recordings
+*.zip
+*.mp4
+.tmp*
+directadmin-password-reset-api-2026-08-21/

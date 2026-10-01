@@ -10,7 +10,8 @@ api.interceptors.response.use(undefined, async (error: AxiosError) => {
   const request = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined;
   if (!request || request._retried || error.response?.status !== 401 || request.url?.includes('/auth/refresh')) throw error;
   request._retried = true;
-  refreshRequest ??= api.post<AuthPayload>('/auth/refresh').then(({ data }) => data).finally(() => { refreshRequest = null; });
-  try { const session = await refreshRequest; authStore.setSession(session.accessToken, session.user); request.headers.Authorization = `Bearer ${session.accessToken}`; return api(request); }
+  const storedRt = authStore.getRefreshToken();
+  refreshRequest ??= api.post<AuthPayload>('/auth/refresh', storedRt ? { refreshToken: storedRt } : {}).then(({ data }) => data).finally(() => { refreshRequest = null; });
+  try { const session = await refreshRequest; authStore.setSession(session.accessToken, session.user, session.refreshToken); request.headers.Authorization = `Bearer ${session.accessToken}`; return api(request); }
   catch (refreshError) { authStore.clear(); throw refreshError; }
 });

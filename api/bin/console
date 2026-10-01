@@ -104,30 +104,205 @@ if ($command === 'user:create-super-admin') {
 }
 
 if ($command === 'queue:work') {
-    $jobs = $app->db->query("SELECT id, job_type, payload, attempts, max_attempts FROM queue_jobs WHERE status = 'ready' AND available_at <= UTC_TIMESTAMP() ORDER BY priority, id LIMIT 25")->fetchAll();
-    $dispatcher = new \WhatstheUp\Services\CampaignDispatchService($app->db, new \WhatstheUp\Services\MetaGraphClient(), new \WhatstheUp\Security\TokenCipher(), new \WhatstheUp\Services\AuditService($app->db));
-    foreach ($jobs as $job) {
-        $app->db->prepare("UPDATE queue_jobs SET status = 'reserved', attempts = attempts + 1, locked_at = UTC_TIMESTAMP(), lock_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE), lock_token = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'ready'")->execute([Uuid::v4(), $job['id']]);
-        try {
-            $payload = json_decode((string) $job['payload'], true, 512, JSON_THROW_ON_ERROR);
-            if ($job['job_type'] !== 'campaign.dispatch' || !is_string($payload['campaign_id'] ?? null)) {
-                throw new RuntimeException('Unsupported queue job.');
-            }
-            $result = $dispatcher->dispatch($payload['campaign_id']);
-            $app->db->prepare("UPDATE queue_jobs SET status = 'completed', completed_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$job['id']]);
-            fwrite(STDOUT, "Campaign {$payload['campaign_id']} dispatched: {$result['sent']} sent, {$result['failed']} failed.\n");
-        } catch (Throwable $exception) {
-            $status = ((int) $job['attempts'] + 1) >= (int) $job['max_attempts'] ? 'failed' : 'ready';
-            $app->db->prepare("UPDATE queue_jobs SET status = ?, last_error_code = 'dispatch_failed', last_error = ?, available_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$status, mb_substr($exception->getMessage(), 0, 500), $job['id']]);
-            fwrite(STDERR, "Queue job {$job['id']} failed: {$exception->getMessage()}\n");
+    $args = array_slice($argv, 2);
+    $isDaemon = in_array('--daemon', $args, true);
+    $queueOpt = 'campaigns,default';
+    $sleepSec = 2;
+    $maxJobs = 0;
+    $maxTime = 0;
+    $memoryLimit = 128 * 1024 * 1024; // 128MB default
+
+    foreach ($args as $arg) {
+        if (str_starts_with($arg, '--queue=')) {
+            $queueOpt = substr($arg, 8);
+        } elseif (str_starts_with($arg, '--sleep=')) {
+            $sleepSec = max(1, (int) substr($arg, 8));
+        } elseif (str_starts_with($arg, '--max-jobs=')) {
+            $maxJobs = max(1, (int) substr($arg, 11));
+        } elseif (str_starts_with($arg, '--max-time=')) {
+            $maxTime = max(1, (int) substr($arg, 11));
+        } elseif (str_starts_with($arg, '--memory=')) {
+            $memStr = substr($arg, 9);
+            $memoryLimit = (int) $memStr * (str_ends_with(strtoupper($memStr), 'M') ? 1024 * 1024 : 1);
         }
     }
+
+    $queueService = new \WhatstheUp\Services\QueueService($app->db);
+    $rateLimiter = new \WhatstheUp\Services\RateLimiter($app->db);
+    $dispatcher = new \WhatstheUp\Services\CampaignDispatchService(
+        $app->db,
+        new \WhatstheUp\Services\MetaGraphClient(),
+        new \WhatstheUp\Security\TokenCipher(),
+        new \WhatstheUp\Services\AuditService($app->db),
+        $rateLimiter,
+        $queueService
+    );
+
+    $startTime = time();
+    $jobsProcessed = 0;
+
+    // Clean up any stale locks on worker boot
+    $queueService->reclaimStaleLocks(10);
+
+    do {
+        $jobs = $queueService->claim($queueOpt, 10, 10);
+
+        if (empty($jobs)) {
+            if (!$isDaemon) {
+                break;
+            }
+            sleep($sleepSec);
+        } else {
+            foreach ($jobs as $job) {
+                try {
+                    $payload = json_decode((string) $job['payload'], true, 512, JSON_THROW_ON_ERROR);
+                    $jobType = (string) $job['job_type'];
+
+                    if ($jobType === 'campaign.dispatch') {
+                        if (!is_string($payload['campaign_id'] ?? null)) {
+                            throw new RuntimeException('Missing campaign_id in payload.');
+                        }
+                        $result = $dispatcher->dispatch($payload['campaign_id']);
+                        if (!empty($result['batched'])) {
+                            fwrite(STDOUT, "Campaign {$payload['campaign_id']} partitioned into {$result['total_batches']} batches.\n");
+                        } else {
+                            fwrite(STDOUT, "Campaign {$payload['campaign_id']} dispatched: {$result['accepted']} accepted, {$result['failed']} failed, {$result['skipped']} skipped.\n");
+                        }
+                    } elseif ($jobType === 'campaign.dispatch_batch') {
+                        if (!is_string($payload['campaign_id'] ?? null) || !is_array($payload['contact_ids'] ?? null)) {
+                            throw new RuntimeException('Invalid campaign batch payload.');
+                        }
+                        $result = $dispatcher->dispatchBatch($payload['campaign_id'], $payload['contact_ids']);
+                        $batchIdx = (int) ($payload['batch_index'] ?? 0) + 1;
+                        $totalBatches = (int) ($payload['total_batches'] ?? 1);
+                        fwrite(STDOUT, "Campaign {$payload['campaign_id']} batch {$batchIdx}/{$totalBatches} dispatched: {$result['accepted']} accepted, {$result['failed']} failed, {$result['skipped']} skipped.\n");
+                    } else {
+                        throw new RuntimeException("Unsupported job type: {$jobType}");
+                    }
+
+                    $queueService->markCompleted($job['id']);
+                } catch (Throwable $exception) {
+                    $errorMsg = mb_substr($exception->getMessage(), 0, 500);
+                    $queueService->markFailed($job['id'], 'dispatch_failed', $errorMsg);
+                    fwrite(STDERR, "Queue job {$job['id']} failed: {$exception->getMessage()}\n");
+                }
+
+                $jobsProcessed++;
+                if ($maxJobs > 0 && $jobsProcessed >= $maxJobs) {
+                    fwrite(STDOUT, "Reached max jobs limit ({$maxJobs}). Exiting worker.\n");
+                    break 2;
+                }
+            }
+        }
+
+        if ($maxTime > 0 && (time() - $startTime) >= $maxTime) {
+            fwrite(STDOUT, "Reached max execution time ({$maxTime}s). Exiting worker.\n");
+            break;
+        }
+
+        if (memory_get_usage(true) >= $memoryLimit) {
+            fwrite(STDOUT, "Memory limit reached (" . round(memory_get_usage(true) / 1024 / 1024, 2) . " MB). Exiting worker.\n");
+            break;
+        }
+    } while ($isDaemon);
+
     exit(0);
 }
 
-if (in_array($command, ['schedule:run', 'queue:retry', 'queue:health', 'meta:sync-pending-templates', 'reports:aggregate', 'meta:connection-health', 'cleanup:temporary-files', 'sessions:cleanup', 'database:backup'], true)) {
+if ($command === 'queue:retry') {
+    $queueService = new \WhatstheUp\Services\QueueService($app->db);
+    $target = $argv[2] ?? '';
+    if ($target === '--all') {
+        $count = $queueService->retryAll();
+        fwrite(STDOUT, "Retried {$count} failed job(s).\n");
+        exit(0);
+    }
+
+    $id = is_numeric($target) ? (int) $target : 0;
+    if ($id <= 0 && str_starts_with($target, '--id=')) {
+        $id = (int) substr($target, 5);
+    }
+
+    if ($id <= 0) {
+        fwrite(STDERR, "Usage: queue:retry <id> or queue:retry --all\n");
+        exit(1);
+    }
+
+    $success = $queueService->retry($id);
+    if ($success) {
+        fwrite(STDOUT, "Job {$id} successfully re-enqueued for retry.\n");
+        exit(0);
+    } else {
+        fwrite(STDERR, "Failed job {$id} was not found or has already been retried.\n");
+        exit(1);
+    }
+}
+
+if ($command === 'queue:health') {
+    $queueService = new \WhatstheUp\Services\QueueService($app->db);
+    $health = $queueService->health();
+    fwrite(STDOUT, "\nWhatsdUP Queue Health Report\n");
+    fwrite(STDOUT, "----------------------------\n");
+    fwrite(STDOUT, sprintf("%-22s %d\n", "Ready Jobs:", $health['ready']));
+    fwrite(STDOUT, sprintf("%-22s %d\n", "Reserved (In-Flight):", $health['reserved']));
+    fwrite(STDOUT, sprintf("%-22s %d\n", "Completed Jobs:", $health['completed']));
+    fwrite(STDOUT, sprintf("%-22s %d\n", "Transient Failed:", $health['failed']));
+    fwrite(STDOUT, sprintf("%-22s %d\n", "Permanent Failed:", $health['permanent_failed']));
+    fwrite(STDOUT, sprintf("%-22s %d\n", "Stale Reserved Locks:", $health['stale_reserved']));
+    $age = $health['oldest_ready_seconds'] !== null ? "{$health['oldest_ready_seconds']}s" : "N/A";
+    fwrite(STDOUT, sprintf("%-22s %s\n", "Oldest Ready Job:", $age));
+    fwrite(STDOUT, "----------------------------\n\n");
+    exit(0);
+}
+
+if ($command === 'queue:clear-stale') {
+    $queueService = new \WhatstheUp\Services\QueueService($app->db);
+    $reclaimed = $queueService->reclaimStaleLocks();
+    fwrite(STDOUT, "Reclaimed {$reclaimed} stale job lock(s).\n");
+    exit(0);
+}
+
+if ($command === 'schedule:run') {
+    $dueCampaigns = $app->db->query("SELECT id, business_id FROM campaigns WHERE status = 'scheduled' AND scheduled_at <= UTC_TIMESTAMP()")->fetchAll();
+    $dispatched = 0;
+    foreach ($dueCampaigns as $camp) {
+        $app->db->beginTransaction();
+        try {
+            $lock = $app->db->prepare("UPDATE campaigns SET status = 'queued', launched_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'scheduled'");
+            $lock->execute([$camp['id']]);
+            if ($lock->rowCount() === 1) {
+                $app->db->prepare("INSERT INTO queue_jobs (business_id, queue, job_type, payload, idempotency_key, trace_id, status, priority, attempts, max_attempts, available_at, created_at, updated_at) VALUES (?, 'campaigns', 'campaign.dispatch', ?, ?, ?, 'ready', 100, 0, 5, UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
+                    $camp['business_id'],
+                    json_encode(['campaign_id' => $camp['id']], JSON_THROW_ON_ERROR),
+                    'campaign-dispatch:' . $camp['id'],
+                    Uuid::v4(),
+                ]);
+                $dispatched++;
+            }
+            $app->db->commit();
+        } catch (Throwable $e) {
+            $app->db->rollBack();
+            fwrite(STDERR, "Could not enqueue scheduled campaign {$camp['id']}: {$e->getMessage()}\n");
+        }
+    }
+
+    // Reconcile 'dispatched' campaigns where all recipients have reached terminal states
+    $pendingCampaigns = $app->db->query("SELECT id FROM campaigns WHERE status IN ('dispatched', 'processing')")->fetchAll();
+    foreach ($pendingCampaigns as $pCamp) {
+        $unsettled = $app->db->prepare("SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status IN ('queued', 'accepted')");
+        $unsettled->execute([$pCamp['id']]);
+        if ((int) $unsettled->fetchColumn() === 0) {
+            $app->db->prepare("UPDATE campaigns SET status = 'completed', completed_at = COALESCE(completed_at, UTC_TIMESTAMP()), delivered_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status IN ('delivered','read')), read_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status = 'read'), failed_count = (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ? AND status IN ('failed','skipped')), updated_at = UTC_TIMESTAMP() WHERE id = ? AND status IN ('dispatched', 'processing')")->execute([$pCamp['id'], $pCamp['id'], $pCamp['id'], $pCamp['id']]);
+        }
+    }
+
+    fwrite(STDOUT, "Scheduler ran: {$dispatched} scheduled campaign(s) queued.\n");
+    exit(0);
+}
+
+if (in_array($command, ['meta:sync-pending-templates', 'reports:aggregate', 'meta:connection-health', 'cleanup:temporary-files', 'sessions:cleanup', 'database:backup'], true)) {
     fwrite(STDERR, "{$command} is reserved for its implementation milestone and performs no simulated work.\n");
     exit(2);
 }
 
-fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  queue:work\n  user:create-owner --business=... --name=... --email=... --password=...\n  user:create-super-admin --name=... --email=... --password=...\n");
+fwrite(STDOUT, "WhatstheUp console\n\nAvailable:\n  migrate\n  seed:foundation\n  queue:work [--daemon] [--queue=...] [--sleep=...] [--max-jobs=...] [--max-time=...] [--memory=...]\n  queue:retry <id|--all>\n  queue:health\n  queue:clear-stale\n  schedule:run\n  user:create-owner --business=... --name=... --email=... --password=...\n  user:create-super-admin --name=... --email=... --password=...\n");

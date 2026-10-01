@@ -1,0 +1,36 @@
+WHATSDUP - DIRECTADMIN BACKEND PATCH (commit 0c42c19)
+
+This ZIP is an update, not a full installation. It contains six PHP files
+under app/ and routes/, plus instructions. No credentials are included.
+
+1. Back up the current backend files and database. Pause campaign workers
+   and place the app in maintenance during the update.
+2. In DirectAdmin File Manager, open the EXISTING API ROOT: the folder
+   containing app/, routes/, vendor/, public/ and the backend .env.
+   Do NOT extract into public/ or frontend/. Do not create an extra api/ folder.
+3. Upload and extract this ZIP there, replacing the matching six PHP files.
+   Preserve .env, vendor/, storage/, public/ and all other existing files.
+4. In the existing backend .env, add/update these values without duplicating keys:
+
+META_TEST_CONNECTION_ENABLED=true
+META_TEST_BUSINESS_ID=REPLACE_WITH_INTERNAL_WHATSDUP_WORKSPACE_UUID
+META_TEST_WABA_ID=1376690200553798
+META_TEST_PHONE_NUMBER_ID=1349858381536228
+
+The workspace UUID is NOT the Meta business ID or WABA ID. Obtain it from
+your WhatsdUp administrator business record. Do not leave the placeholder.
+Keep the existing TOKEN_ENCRYPTION_KEY and all other credentials unchanged.
+Never put a Meta access token in these instructions or frontend variables.
+
+5. No database migration or new dependency is required. If Composer uses
+   classmap-authoritative mode, regenerate autoload with composer dump-autoload
+   --no-dev --optimize. Refresh PHP/OPcache through your hosting controls if needed.
+6. Confirm the Vercel deployment for commit 0c42c19 is successful. Restore service.
+7. In the enabled workspace, open Meta Connection -> Developer test connection.
+   Enter the fresh Meta test token only in that password field. Confirm replacement.
+   Then Templates -> Sync from Meta. Create a NEW test campaign using an approved
+   synced template and your own recipient verified in Meta's test setup.
+
+Uploading this ZIP alone does NOT connect the test account. The environment
+settings, deployed frontend and fresh token are also required.
+See TEST_CONNECTION_REPAIR.md for limitations, test steps and rollback.

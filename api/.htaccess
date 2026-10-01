@@ -1,0 +1,19 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Prevent direct access to sensitive files and directories
+    RewriteRule ^\.env - [F,L,NC]
+    RewriteRule ^composer\.(json|lock) - [F,L,NC]
+    RewriteRule ^phpunit\.xml - [F,L,NC]
+    RewriteRule ^database/.*\.sql - [F,L,NC]
+    RewriteRule ^(app|bootstrap|bin|database|storage|tests|vendor)/ - [F,L,NC]
+
+    # If domain points to api/ instead of api/public/, forward cleanly
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+<FilesMatch "^\.">
+    Order allow,deny
+    Deny from all
+</FilesMatch>

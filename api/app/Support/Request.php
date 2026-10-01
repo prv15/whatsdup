@@ -28,9 +28,24 @@ final class Request
         foreach ($headers as $key => $value) {
             $normalized[strtolower((string) $key)] = (string) $value;
         }
+
+        // FastCGI / Apache authorization header fallback
+        if (!isset($normalized['authorization'])) {
+            if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+                $normalized['authorization'] = (string) $_SERVER['HTTP_AUTHORIZATION'];
+            } elseif (isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+                $normalized['authorization'] = (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+            }
+        }
+
+        $rawPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        if (preg_match('#(/api/v1/.*)$#', $rawPath, $matches)) {
+            $rawPath = $matches[1];
+        }
+
         return new self(
             strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET'),
-            parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/',
+            $rawPath,
             $normalized,
             file_get_contents('php://input') ?: '',
             $_COOKIE,

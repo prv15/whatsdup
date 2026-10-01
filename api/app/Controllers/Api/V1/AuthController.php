@@ -23,7 +23,12 @@ final class AuthController
     public function refresh(Request $request): array
     {
         $name = Env::get('REFRESH_COOKIE_NAME', 'whatstheup_refresh') ?? 'whatstheup_refresh';
-        return $this->withCookie($this->auth->refresh((string) ($request->cookies[$name] ?? ''), $request));
+        $token = (string) ($request->cookies[$name] ?? '');
+        if ($token === '') {
+            $input = $request->json();
+            $token = (string) ($input['refreshToken'] ?? '');
+        }
+        return $this->withCookie($this->auth->refresh($token, $request));
     }
 
     public function forgotPassword(Request $request): array
@@ -63,6 +68,7 @@ final class AuthController
     private function withCookie(array $payload): array
     {
         $raw = $payload['_refreshToken'];
+        $payload['refreshToken'] = $raw;
         unset($payload['_refreshToken']);
         setcookie(Env::get('REFRESH_COOKIE_NAME', 'whatstheup_refresh') ?? 'whatstheup_refresh', $raw, $this->cookieOptions(time() + Env::int('REFRESH_TOKEN_TTL', 2592000)));
         return $payload;

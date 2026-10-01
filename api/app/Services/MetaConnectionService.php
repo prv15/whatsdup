@@ -272,7 +272,7 @@ final class MetaConnectionService
         $token = $this->cipher->decrypt((string) $row['ciphertext'], (string) $row['nonce']);
         $response = $this->graph->getTemplates((string) $row['meta_waba_id'], $token);
         $templates = is_array($response['data'] ?? null) ? $response['data'] : [];
-        $statement = $this->db->prepare("INSERT INTO message_templates (id, business_id, meta_template_id, name, language, category, header_type, body, status, rejection_reason, created_by, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE meta_template_id = VALUES(meta_template_id), category = VALUES(category), header_type = VALUES(header_type), body = VALUES(body), status = VALUES(status), rejection_reason = VALUES(rejection_reason), updated_at = UTC_TIMESTAMP(), deleted_at = NULL");
+        $statement = $this->db->prepare("INSERT INTO message_templates (id, business_id, meta_template_id, name, language, category, header_type, body, variables, status, rejection_reason, created_by, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE meta_template_id = VALUES(meta_template_id), category = VALUES(category), header_type = VALUES(header_type), body = VALUES(body), variables = VALUES(variables), status = VALUES(status), rejection_reason = VALUES(rejection_reason), updated_at = UTC_TIMESTAMP(), deleted_at = NULL");
         $synced = 0;
         $this->db->beginTransaction();
         try {
@@ -287,7 +287,13 @@ final class MetaConnectionService
                     if (strtoupper((string) ($component['type'] ?? '')) === 'BODY') $body = (string) ($component['text'] ?? '');
                     if (strtoupper((string) ($component['type'] ?? '')) === 'HEADER' && strtoupper((string) ($component['format'] ?? '')) === 'IMAGE') $headerType = 'image';
                 }
-                $statement->execute([Uuid::v4(), $businessId, (string) ($template['id'] ?? ''), strtolower((string) $template['name']), (string) $template['language'], $category, $headerType, $body, $status, $status === 'rejected' ? 'Rejected by Meta. Check Meta Business Manager for details.' : null, $userId]);
+                $variables = null;
+                if (preg_match_all('/\{\{(\d+)\}\}/', $body, $matches) && !empty($matches[1])) {
+                    $varKeys = array_values(array_unique($matches[1]));
+                    sort($varKeys, SORT_NUMERIC);
+                    $variables = json_encode($varKeys, JSON_THROW_ON_ERROR);
+                }
+                $statement->execute([Uuid::v4(), $businessId, (string) ($template['id'] ?? ''), strtolower((string) $template['name']), (string) $template['language'], $category, $headerType, $body, $variables, $status, $status === 'rejected' ? 'Rejected by Meta. Check Meta Business Manager for details.' : null, $userId]);
                 $synced++;
             }
             $this->audit->record($businessId, $userId, 'meta.templates.synced', 'meta_connection', (string) $row['meta_waba_id'], ['count' => $synced]);

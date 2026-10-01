@@ -12,7 +12,11 @@ use WhatstheUp\Support\Uuid;
 
 final class OperationsService
 {
-    public function __construct(private readonly PDO $db, private readonly AuditService $audit)
+    public function __construct(
+        private readonly PDO $db,
+        private readonly AuditService $audit,
+        private readonly ?QuotaService $quota = null,
+    )
     {
     }
 
@@ -30,6 +34,7 @@ final class OperationsService
         return [
             'metrics' => ['messagesToday' => (int) ($row['messages_today'] ?? 0), 'contacts' => (int) ($row['contacts'] ?? 0), 'approvedTemplates' => (int) ($row['approved_templates'] ?? 0), 'scheduledCampaigns' => (int) ($row['scheduled_campaigns'] ?? 0)],
             'metaStatus' => $meta->fetchColumn() ?: 'not_connected',
+            'quota' => ($this->quota ?? new QuotaService($this->db))->getUsageOverview($businessId),
         ];
     }
 
@@ -90,6 +95,7 @@ final class OperationsService
         if (!is_array($rows) || $rows === [] || count($rows) > 5000) {
             throw new HttpException(422, 'Upload between 1 and 5,000 contact rows at a time.', 'validation_failed');
         }
+        ($this->quota ?? new QuotaService($this->db))->assertCanImportContacts($businessId, count($rows));
         $importId = Uuid::v4(); $imported = 0; $updated = 0; $skipped = 0; $errors = [];
         $exists = $this->db->prepare('SELECT id FROM contacts WHERE business_id = ? AND phone_e164 = ? LIMIT 1');
         $upsert = $this->db->prepare("INSERT INTO contacts (id, business_id, phone_e164, name, email, tags, custom_fields, consent_status, consent_at, source, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL) ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email), tags = VALUES(tags), consent_status = VALUES(consent_status), consent_at = VALUES(consent_at), source = VALUES(source), deleted_at = NULL, updated_at = UTC_TIMESTAMP()");
@@ -177,9 +183,14 @@ final class OperationsService
 
     public function templates(string $businessId): array
     {
-        $statement = $this->db->prepare('SELECT id, name, language, category, header_type, header_media_url, body, status, rejection_reason, created_at, updated_at FROM message_templates WHERE business_id = ? AND deleted_at IS NULL ORDER BY created_at DESC');
+        $statement = $this->db->prepare('SELECT id, name, language, category, header_type, header_media_url, body, variables, status, rejection_reason, created_at, updated_at FROM message_templates WHERE business_id = ? AND deleted_at IS NULL ORDER BY created_at DESC');
         $statement->execute([$businessId]);
-        return array_map(static fn (array $row) => ['id' => $row['id'], 'name' => $row['name'], 'language' => $row['language'], 'category' => $row['category'], 'headerType' => $row['header_type'], 'headerMediaUrl' => $row['header_media_url'], 'body' => $row['body'], 'status' => $row['status'], 'rejectionReason' => $row['rejection_reason'], 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at']], $statement->fetchAll());
+        return array_map(static fn (array $row) => [
+            'id' => $row['id'], 'name' => $row['name'], 'language' => $row['language'], 'category' => $row['category'],
+            'headerType' => $row['header_type'], 'headerMediaUrl' => $row['header_media_url'], 'body' => $row['body'],
+            'variables' => $row['variables'] ? json_decode((string) $row['variables'], true, 512, JSON_THROW_ON_ERROR) : [],
+            'status' => $row['status'], 'rejectionReason' => $row['rejection_reason'], 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at'],
+        ], $statement->fetchAll());
     }
 
     public function createTemplate(string $businessId, string $userId, array $input): array
@@ -194,8 +205,17 @@ final class OperationsService
         }
         $id = Uuid::v4();
         $headerMediaUrl = $headerImage !== '' ? $this->storeTemplateImage($businessId, $headerImage) : null;
-        try { $this->db->prepare("INSERT INTO message_templates (id, business_id, name, language, category, header_type, header_media_url, body, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$id, $businessId, $name, $language, $category, $headerMediaUrl !== null ? 'image' : 'none', $headerMediaUrl, $body, $userId]); }
-        catch (Throwable $exception) { throw new HttpException(409, 'A template with this name and language already exists.', 'template_exists'); }
+        $variables = null;
+        if (preg_match_all('/\{\{(\d+)\}\}/', $body, $matches) && !empty($matches[1])) {
+            $varKeys = array_values(array_unique($matches[1]));
+            sort($varKeys, SORT_NUMERIC);
+            $variables = json_encode($varKeys, JSON_THROW_ON_ERROR);
+        }
+        try {
+            $this->db->prepare("INSERT INTO message_templates (id, business_id, name, language, category, header_type, header_media_url, body, variables, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$id, $businessId, $name, $language, $category, $headerMediaUrl !== null ? 'image' : 'none', $headerMediaUrl, $body, $variables, $userId]);
+        } catch (Throwable $exception) {
+            throw new HttpException(409, 'A template with this name and language already exists.', 'template_exists');
+        }
         $this->audit->record($businessId, $userId, 'template.created', 'message_template', $id, ['name' => $name]);
         return $this->templateById($businessId, $id);
     }
@@ -204,10 +224,22 @@ final class OperationsService
     {
         $body = trim((string) ($input['body'] ?? ''));
         $category = (string) ($input['category'] ?? 'marketing');
-        if ($body === '' || mb_strlen($body) > 1024 || !in_array($category, ['marketing', 'utility', 'authentication'], true)) throw new HttpException(422, 'Enter a valid category and message body.', 'validation_failed');
-        $statement = $this->db->prepare("UPDATE message_templates SET category = ?, body = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL");
-        $statement->execute([$category, $body, $id, $businessId]);
-        if ($statement->rowCount() === 0) { $draft = $this->db->prepare("SELECT 1 FROM message_templates WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL"); $draft->execute([$id, $businessId]); if (!$draft->fetchColumn()) throw new HttpException(422, 'Only local template drafts can be edited.', 'template_not_editable'); }
+        if ($body === '' || mb_strlen($body) > 1024 || !in_array($category, ['marketing', 'utility', 'authentication'], true)) {
+            throw new HttpException(422, 'Enter a valid category and message body.', 'validation_failed');
+        }
+        $variables = null;
+        if (preg_match_all('/\{\{(\d+)\}\}/', $body, $matches) && !empty($matches[1])) {
+            $varKeys = array_values(array_unique($matches[1]));
+            sort($varKeys, SORT_NUMERIC);
+            $variables = json_encode($varKeys, JSON_THROW_ON_ERROR);
+        }
+        $statement = $this->db->prepare("UPDATE message_templates SET category = ?, body = ?, variables = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL");
+        $statement->execute([$category, $body, $variables, $id, $businessId]);
+        if ($statement->rowCount() === 0) {
+            $draft = $this->db->prepare("SELECT 1 FROM message_templates WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL");
+            $draft->execute([$id, $businessId]);
+            if (!$draft->fetchColumn()) throw new HttpException(422, 'Only local template drafts can be edited.', 'template_not_editable');
+        }
         $this->audit->record($businessId, $userId, 'template.updated', 'message_template', $id);
         return $this->templateById($businessId, $id);
     }
@@ -223,9 +255,28 @@ final class OperationsService
 
     public function campaigns(string $businessId): array
     {
-        $statement = $this->db->prepare("SELECT c.id, c.name, c.audience_type, c.status, c.scheduled_at, c.launched_at, c.completed_at, c.recipient_count, c.delivered_count, c.read_count, c.failed_count, c.created_at, t.name template_name, t.language template_language, (SELECT cc.failure_code FROM campaign_contacts cc WHERE cc.campaign_id = c.id AND cc.status = 'failed' ORDER BY cc.updated_at DESC LIMIT 1) failure_code, (SELECT cc.failure_message FROM campaign_contacts cc WHERE cc.campaign_id = c.id AND cc.status = 'failed' ORDER BY cc.updated_at DESC LIMIT 1) failure_message FROM campaigns c JOIN message_templates t ON t.id = c.template_id WHERE c.business_id = ? ORDER BY c.created_at DESC LIMIT 100");
+        $statement = $this->db->prepare("SELECT c.id, c.name, c.audience_type, c.variable_mappings, c.status, c.scheduled_at, c.launched_at, c.completed_at, c.recipient_count, c.delivered_count, c.read_count, c.failed_count, (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = c.id AND cc.status IN ('accepted', 'sent')) accepted_count, c.created_at, t.name template_name, t.language template_language, (SELECT cc.failure_code FROM campaign_contacts cc WHERE cc.campaign_id = c.id AND cc.status = 'failed' ORDER BY cc.updated_at DESC LIMIT 1) failure_code, (SELECT cc.failure_message FROM campaign_contacts cc WHERE cc.campaign_id = c.id AND cc.status = 'failed' ORDER BY cc.updated_at DESC LIMIT 1) failure_message FROM campaigns c JOIN message_templates t ON t.id = c.template_id WHERE c.business_id = ? ORDER BY c.created_at DESC LIMIT 100");
         $statement->execute([$businessId]);
-        return array_map(static fn (array $row) => ['id' => $row['id'], 'name' => $row['name'], 'audienceType' => $row['audience_type'], 'status' => $row['status'], 'scheduledAt' => $row['scheduled_at'], 'launchedAt' => $row['launched_at'], 'completedAt' => $row['completed_at'], 'recipientCount' => (int) $row['recipient_count'], 'deliveredCount' => (int) $row['delivered_count'], 'readCount' => (int) $row['read_count'], 'failedCount' => (int) $row['failed_count'], 'failureCode' => $row['failure_code'], 'failureMessage' => $row['failure_message'], 'templateName' => $row['template_name'], 'templateLanguage' => $row['template_language'], 'createdAt' => $row['created_at']], $statement->fetchAll());
+        return array_map(static fn (array $row) => [
+            'id' => $row['id'],
+            'name' => $row['name'],
+            'audienceType' => $row['audience_type'],
+            'variableMappings' => $row['variable_mappings'] ? json_decode((string) $row['variable_mappings'], true, 512, JSON_THROW_ON_ERROR) : null,
+            'status' => $row['status'],
+            'scheduledAt' => $row['scheduled_at'],
+            'launchedAt' => $row['launched_at'],
+            'completedAt' => $row['completed_at'],
+            'recipientCount' => (int) $row['recipient_count'],
+            'acceptedCount' => (int) ($row['accepted_count'] ?? 0),
+            'deliveredCount' => (int) $row['delivered_count'],
+            'readCount' => (int) $row['read_count'],
+            'failedCount' => (int) $row['failed_count'],
+            'failureCode' => $row['failure_code'],
+            'failureMessage' => $row['failure_message'],
+            'templateName' => $row['template_name'],
+            'templateLanguage' => $row['template_language'],
+            'createdAt' => $row['created_at'],
+        ], $statement->fetchAll());
     }
 
     public function createCampaign(string $businessId, string $userId, array $input): array
@@ -236,13 +287,24 @@ final class OperationsService
         $selected = is_array($input['contactIds'] ?? null) ? array_values(array_unique(array_filter($input['contactIds'], 'is_string'))) : [];
         $groupIds = is_array($input['groupIds'] ?? null) ? array_values(array_unique(array_filter($input['groupIds'], 'is_string'))) : [];
         $scheduleAt = trim((string) ($input['scheduledAt'] ?? ''));
-        if (mb_strlen($name) < 2 || mb_strlen($name) > 190 || !in_array($audience, ['all_opted_in', 'selected', 'groups'], true) || ($audience === 'selected' && $selected === []) || ($audience === 'groups' && $groupIds === [])) { throw new HttpException(422, 'Choose a name, template and eligible audience.', 'validation_failed'); }
-        $template = $this->db->prepare('SELECT id FROM message_templates WHERE id = ? AND business_id = ? AND deleted_at IS NULL LIMIT 1'); $template->execute([$templateId, $businessId]);
-        if (!$template->fetchColumn()) { throw new HttpException(422, 'Choose a template from this business.', 'validation_failed'); }
+        $variableMappings = is_array($input['variableMappings'] ?? null) ? $input['variableMappings'] : null;
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 190 || !in_array($audience, ['all_opted_in', 'selected', 'groups'], true) || ($audience === 'selected' && $selected === []) || ($audience === 'groups' && $groupIds === [])) {
+            throw new HttpException(422, 'Choose a name, template and eligible audience.', 'validation_failed');
+        }
+        $template = $this->db->prepare('SELECT id, variables FROM message_templates WHERE id = ? AND business_id = ? AND deleted_at IS NULL LIMIT 1');
+        $template->execute([$templateId, $businessId]);
+        $templateRow = $template->fetch();
+        if (!$templateRow) {
+            throw new HttpException(422, 'Choose a template from this business.', 'validation_failed');
+        }
         $campaignId = Uuid::v4();
         $this->db->beginTransaction();
         try {
-            $this->db->prepare("INSERT INTO campaigns (id, business_id, template_id, name, audience_type, status, scheduled_at, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$campaignId, $businessId, $templateId, $name, $audience, $scheduleAt !== '' ? $scheduleAt : null, $userId]);
+            $this->db->prepare("INSERT INTO campaigns (id, business_id, template_id, name, audience_type, variable_mappings, status, scheduled_at, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
+                $campaignId, $businessId, $templateId, $name, $audience,
+                $variableMappings !== null ? json_encode($variableMappings, JSON_THROW_ON_ERROR) : null,
+                $scheduleAt !== '' ? $scheduleAt : null, $userId
+            ]);
             if ($audience === 'all_opted_in') {
                 $this->db->prepare("INSERT INTO campaign_contacts (campaign_id, contact_id, business_id, phone_e164, status, created_at, updated_at) SELECT ?, id, business_id, phone_e164, 'queued', UTC_TIMESTAMP(), UTC_TIMESTAMP() FROM contacts WHERE business_id = ? AND consent_status = 'opted_in' AND deleted_at IS NULL")->execute([$campaignId, $businessId]);
             } elseif ($audience === 'selected') {
@@ -261,11 +323,15 @@ final class OperationsService
                 $statement = $this->db->prepare("INSERT IGNORE INTO campaign_contacts (campaign_id, contact_id, business_id, phone_e164, status, created_at, updated_at) SELECT ?, c.id, c.business_id, c.phone_e164, 'queued', UTC_TIMESTAMP(), UTC_TIMESTAMP() FROM contacts c JOIN contact_group_members m ON m.contact_id = c.id WHERE c.business_id = ? AND c.consent_status = 'opted_in' AND c.deleted_at IS NULL AND m.group_id IN ({$groupPlaceholders})");
                 $statement->execute([$campaignId, $businessId, ...$validGroupIds]);
             }
-            $count = $this->db->prepare('SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ?'); $count->execute([$campaignId]);
+            $count = $this->db->prepare('SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ?');
+            $count->execute([$campaignId]);
             $this->db->prepare('UPDATE campaigns SET recipient_count = ? WHERE id = ?')->execute([(int) $count->fetchColumn(), $campaignId]);
             $this->audit->record($businessId, $userId, 'campaign.created', 'campaign', $campaignId, ['audience' => $audience]);
             $this->db->commit();
-        } catch (Throwable $exception) { $this->db->rollBack(); throw $exception; }
+        } catch (Throwable $exception) {
+            $this->db->rollBack();
+            throw $exception;
+        }
         return $this->campaignById($businessId, $campaignId);
     }
 
@@ -278,6 +344,8 @@ final class OperationsService
         if ((int) $row['recipient_count'] === 0) { throw new HttpException(422, 'This campaign has no opted-in recipients.', 'empty_audience'); }
         $meta = $this->db->prepare("SELECT 1 FROM meta_connections WHERE business_id = ? AND status = 'connected' AND deleted_at IS NULL LIMIT 1"); $meta->execute([$businessId]);
         if (!$meta->fetchColumn()) { throw new HttpException(422, 'Connect an active Meta WhatsApp account before launching a campaign.', 'meta_not_connected'); }
+        $quota = $this->quota ?? new QuotaService($this->db);
+        $quota->assertCanLaunchCampaign($businessId, (int) $row['recipient_count']);
         $status = $row['scheduled_at'] !== null && strtotime($row['scheduled_at']) > time() ? 'scheduled' : 'queued';
         $this->db->beginTransaction();
         try {
@@ -288,6 +356,7 @@ final class OperationsService
             $ready->execute([$campaignId, $businessId]);
             if (!$ready->fetchColumn()) throw new HttpException(409, 'Campaign or sender changed. Refresh and verify the approved template before launching.', 'campaign_not_ready');
             $this->db->prepare("UPDATE campaigns SET status = ?, launched_at = IF(? = 'queued', UTC_TIMESTAMP(), NULL), updated_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'draft'")->execute([$status, $status, $campaignId]);
+            $quota->recordRecipientUsage($businessId, (int) $row['recipient_count']);
             $this->db->prepare("INSERT INTO queue_jobs (business_id, queue, job_type, payload, idempotency_key, trace_id, status, priority, attempts, max_attempts, available_at, created_at, updated_at) VALUES (?, 'campaigns', 'campaign.dispatch', ?, ?, ?, 'ready', 100, 0, 5, COALESCE((SELECT scheduled_at FROM campaigns WHERE id = ?), UTC_TIMESTAMP()), UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$businessId, json_encode(['campaign_id' => $campaignId], JSON_THROW_ON_ERROR), 'campaign-dispatch:' . $campaignId, Uuid::v4(), $campaignId]);
             $this->audit->record($businessId, $userId, 'campaign.launched', 'campaign', $campaignId, ['status' => $status]);
             $this->db->commit();
@@ -321,6 +390,29 @@ final class OperationsService
             $this->db->commit();
         } catch (Throwable $exception) { $this->db->rollBack(); throw $exception; }
         return ['id' => $id, 'deleted' => true];
+    }
+
+    public function campaignRecipients(string $businessId, string $campaignId): array
+    {
+        $campaign = $this->db->prepare('SELECT id, name FROM campaigns WHERE id = ? AND business_id = ? LIMIT 1');
+        $campaign->execute([$campaignId, $businessId]);
+        if (!$campaign->fetch()) {
+            throw new HttpException(404, 'Campaign not found.', 'not_found');
+        }
+        $statement = $this->db->prepare("SELECT cc.contact_id, cc.phone_e164, cc.status, cc.meta_message_id, cc.failure_code, cc.failure_message, cc.sent_at, cc.delivered_at, cc.read_at, c.name contact_name FROM campaign_contacts cc LEFT JOIN contacts c ON c.id = cc.contact_id WHERE cc.campaign_id = ? ORDER BY CASE cc.status WHEN 'failed' THEN 1 WHEN 'skipped' THEN 2 WHEN 'queued' THEN 3 WHEN 'accepted' THEN 4 WHEN 'sent' THEN 5 WHEN 'delivered' THEN 6 WHEN 'read' THEN 7 ELSE 8 END, cc.updated_at DESC LIMIT 500");
+        $statement->execute([$campaignId]);
+        return array_map(static fn (array $row) => [
+            'contactId' => $row['contact_id'],
+            'phone' => $row['phone_e164'],
+            'status' => $row['status'],
+            'metaMessageId' => $row['meta_message_id'],
+            'failureCode' => $row['failure_code'],
+            'failureMessage' => $row['failure_message'],
+            'sentAt' => $row['sent_at'],
+            'deliveredAt' => $row['delivered_at'],
+            'readAt' => $row['read_at'],
+            'contactName' => $row['contact_name'],
+        ], $statement->fetchAll());
     }
 
     private function campaignById(string $businessId, string $campaignId): array

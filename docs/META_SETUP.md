@@ -12,4 +12,23 @@ Meta-owned references:
 - https://www.postman.com/meta/whatsapp-business-platform/folder/gumbt4j/waba-subscriptions
 - https://www.postman.com/meta/whatsapp-business-platform/request/o84xigu/phone-numbers
 
+## Embedded Signup ownership and App Review
+
+The business portfolio that owns the Meta app is intentionally unavailable in
+the customer Embedded Signup selector. Test onboarding with a separate
+customer/test portfolio whose administrator signs in to Meta. The WhatstheUp
+application login and the Facebook/Meta login are separate sessions.
+
+Request `business_management`, `whatsapp_business_management`, and
+`whatsapp_business_messaging` in the Embedded Signup configuration. Changing
+the configuration does not add permissions to an existing token; reconnect the
+customer workspace and grant the updated permissions to obtain a new token.
+
+For `business_management` App Review, record one continuous English-language
+walkthrough showing the complete Meta login, the permission grant, selection
+of the separate customer/test portfolio, completion of Embedded Signup, return
+to WhatstheUp, and a successful **Verify business access** result. Explain that
+the server exchanges the authorization code and calls `/me/businesses`; do not
+submit a video that only shows the already-connected dashboard.
+
 Exchange signup codes server-side and encrypt credentials at rest; never send tokens to React. Sending stays blocked until connection, WABA, registered phone, webhook, approved template and consent-backed contacts are healthy.

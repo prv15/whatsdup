@@ -32,6 +32,13 @@ $router->add('POST', '/api/v1/campaigns', [$operationsController, 'createCampaig
 $router->add('PATCH', '/api/v1/campaigns/{id}', [$operationsController, 'updateCampaign'], [$authenticate, $scope('business'), $permission('campaigns.create')]);
 $router->add('DELETE', '/api/v1/campaigns/{id}', [$operationsController, 'deleteCampaign'], [$authenticate, $scope('business'), $permission('campaigns.create')]);
 $router->add('POST', '/api/v1/campaigns/{id}/launch', [$operationsController, 'launchCampaign'], [$authenticate, $scope('business'), $permission('campaigns.send')]);
+$router->add('GET', '/api/v1/campaigns/{id}/recipients', [$operationsController, 'campaignRecipients'], [$authenticate, $scope('business'), $permission('campaigns.view')]);
+$router->add('GET', '/api/v1/inbox/conversations', [$inboxController, 'conversations'], [$authenticate, $scope('business'), $permission('inbox.view')]);
+$router->add('GET', '/api/v1/inbox/conversations/{id}', [$inboxController, 'conversation'], [$authenticate, $scope('business'), $permission('inbox.view')]);
+$router->add('GET', '/api/v1/inbox/conversations/{id}/messages', [$inboxController, 'messages'], [$authenticate, $scope('business'), $permission('inbox.view')]);
+$router->add('POST', '/api/v1/inbox/conversations/{id}/messages', [$inboxController, 'sendMessage'], [$authenticate, $scope('business'), $permission('inbox.send')]);
+$router->add('POST', '/api/v1/inbox/conversations/{id}/read', [$inboxController, 'markRead'], [$authenticate, $scope('business'), $permission('inbox.view')]);
+$router->add('PATCH', '/api/v1/inbox/conversations/{id}', [$inboxController, 'update'], [$authenticate, $scope('business'), $permission('inbox.view')]);
 $router->add('GET', '/api/v1/meta/configuration', [$metaController, 'configuration'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('GET', '/api/v1/meta/connection', [$metaController, 'status'], [$authenticate, $scope('business'), $permission('settings.manage')]);
 $router->add('POST', '/api/v1/meta/connection/complete', [$metaController, 'complete'], [$authenticate, $scope('business'), $permission('settings.manage')]);
