@@ -1,6 +1,12 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
+    # Pass Authorization header across Apache FastCGI / PHP-FPM / DirectAdmin
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+    <IfModule mod_authz_core.c>
+        CGIPassAuth On
+    </IfModule>
+
     # Prevent direct access to sensitive files and directories
     RewriteRule ^\.env - [F,L,NC]
     RewriteRule ^composer\.(json|lock) - [F,L,NC]
@@ -8,9 +14,9 @@
     RewriteRule ^database/.*\.sql - [F,L,NC]
     RewriteRule ^(app|bootstrap|bin|database|storage|tests|vendor)/ - [F,L,NC]
 
-    # If domain points to api/ instead of api/public/, forward cleanly
+    # If domain points to api/ instead of api/public/, forward cleanly with Authorization preserved
     RewriteCond %{REQUEST_URI} !^/public/
-    RewriteRule ^(.*)$ public/$1 [L]
+    RewriteRule ^(.*)$ public/$1 [QSA,E=HTTP_AUTHORIZATION:%{HTTP:Authorization},L]
 </IfModule>
 
 <FilesMatch "^\.">

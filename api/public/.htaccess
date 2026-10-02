@@ -9,7 +9,7 @@
 
     # Handle CORS preflight headers if mod_headers is enabled
     <IfModule mod_headers.c>
-        Header set Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, Accept, Origin"
+        Header set Access-Control-Allow-Headers "Authorization, X-Authorization, Content-Type, X-Requested-With, Accept, Origin"
         Header set Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     </IfModule>
 

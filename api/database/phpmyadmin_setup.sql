@@ -1119,9 +1119,9 @@ ON DUPLICATE KEY UPDATE `id` = `id`;
 -- Core foundational data for `users`
 -- -----------------------------------------------------------------------------
 INSERT INTO `users` (`id`, `name`, `email`, `password_hash`, `email_verified_at`, `status`, `failed_login_attempts`, `locked_until`, `last_login_at`, `created_at`, `updated_at`, `deleted_at`) VALUES
-('86c9aaa5-e4ac-415a-ad51-d9ea01213c4c', 'Demo Owner', 'owner@whatstheup.com', '$argon2id$v=19$m=65536,t=4,p=1$ZWk5bkl0MlUvcWh5cmplaQ$30vNs+Qod6TocF0teSUBbMWDyK1HT7PxpGsfvSsSYjA', '2026-09-19 05:36:39', 'active', '0', NULL, '2026-10-01 08:16:38', '2026-09-19 05:36:39', '2026-09-19 05:36:39', NULL),
-('e01296d3-279a-4a94-9a84-bba49e359245', 'Super Admin', 'admin@whatstheup.com', '$argon2id$v=19$m=65536,t=4,p=1$MW9ocFBuejZCQlRTcm1JeQ$/hvdR4TbxN8yDXavFrS3AeBLxtXzxIXOK3xAe6ilWvU', '2026-09-19 05:36:28', 'active', '0', NULL, '2026-10-01 08:23:27', '2026-09-19 05:36:28', '2026-09-19 05:36:28', NULL)
-ON DUPLICATE KEY UPDATE `id` = `id`;
+('86c9aaa5-e4ac-415a-ad51-d9ea01213c4c', 'Demo Owner', 'owner@whatstheup.com', '$2y$12$HaZDfMK9VNxphZLo9tJ/kOaqPrUngOiKD4zRivr6dF2YHqpQcEKzO', '2026-09-19 05:36:39', 'active', '0', NULL, '2026-10-01 08:16:38', '2026-09-19 05:36:39', '2026-09-19 05:36:39', NULL),
+('e01296d3-279a-4a94-9a84-bba49e359245', 'Super Admin', 'admin@whatstheup.com', '$2y$12$HaZDfMK9VNxphZLo9tJ/kOaqPrUngOiKD4zRivr6dF2YHqpQcEKzO', '2026-09-19 05:36:28', 'active', '0', NULL, '2026-10-01 08:23:27', '2026-09-19 05:36:28', '2026-09-19 05:36:28', NULL)
+ON DUPLICATE KEY UPDATE `password_hash` = VALUES(`password_hash`), `status` = 'active', `locked_until` = NULL, `failed_login_attempts` = 0;
 
 -- -----------------------------------------------------------------------------
 -- Core foundational data for `business_users`

@@ -22,15 +22,25 @@ final class AdminService
     public function dashboard(): array
     {
         return [
-            'businesses' => (int) $this->db->query("SELECT COUNT(*) FROM businesses WHERE deleted_at IS NULL")->fetchColumn(),
-            'activeBusinesses' => (int) $this->db->query("SELECT COUNT(*) FROM businesses WHERE status = 'active' AND deleted_at IS NULL")->fetchColumn(),
-            'users' => (int) $this->db->query("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")->fetchColumn(),
-            'activeSessions' => (int) $this->db->query("SELECT COUNT(*) FROM user_sessions WHERE revoked_at IS NULL AND expires_at > UTC_TIMESTAMP()")->fetchColumn(),
-            'queuedJobs' => (int) $this->db->query("SELECT COUNT(*) FROM queue_jobs WHERE status IN ('ready', 'reserved')")->fetchColumn(),
-            'failedJobs' => (int) $this->db->query("SELECT COUNT(*) FROM failed_jobs WHERE retried_at IS NULL")->fetchColumn(),
-            'connectedWhatsApp' => (int) $this->db->query("SELECT COUNT(*) FROM whatsapp_phone_numbers WHERE deleted_at IS NULL")->fetchColumn(),
-            'totalCampaigns' => (int) $this->db->query("SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NULL")->fetchColumn(),
+            'businesses' => $this->safeCount('businesses', 'deleted_at IS NULL'),
+            'activeBusinesses' => $this->safeCount('businesses', "status = 'active' AND deleted_at IS NULL"),
+            'users' => $this->safeCount('users', 'deleted_at IS NULL'),
+            'activeSessions' => $this->safeCount('user_sessions', 'revoked_at IS NULL AND expires_at > UTC_TIMESTAMP()'),
+            'queuedJobs' => $this->safeCount('queue_jobs', "status IN ('ready', 'reserved')"),
+            'failedJobs' => $this->safeCount('failed_jobs', 'retried_at IS NULL'),
+            'connectedWhatsApp' => $this->safeCount('whatsapp_phone_numbers', 'deleted_at IS NULL'),
+            'totalCampaigns' => $this->safeCount('campaigns', 'deleted_at IS NULL'),
         ];
+    }
+
+    private function safeCount(string $table, string $condition = '1=1'): int
+    {
+        try {
+            $statement = $this->db->query("SELECT COUNT(*) FROM `{$table}` WHERE {$condition}");
+            return $statement ? (int) $statement->fetchColumn() : 0;
+        } catch (Throwable) {
+            return 0;
+        }
     }
 
     public function businesses(): array

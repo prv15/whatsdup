@@ -5,13 +5,26 @@ const baseURL = import.meta.env.VITE_API_BASE_URL;
 if (!baseURL) throw new Error('VITE_API_BASE_URL is required');
 export const api = axios.create({ baseURL, withCredentials: true, headers: { Accept: 'application/json' } });
 let refreshRequest: Promise<AuthPayload> | null = null;
-api.interceptors.request.use((config) => { const token = authStore.getSnapshot().accessToken; if (token) config.headers.Authorization = `Bearer ${token}`; return config; });
+api.interceptors.request.use((config) => {
+  const token = authStore.getSnapshot().accessToken;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+    config.headers['X-Authorization'] = `Bearer ${token}`;
+  }
+  return config;
+});
 api.interceptors.response.use(undefined, async (error: AxiosError) => {
   const request = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined;
   if (!request || request._retried || error.response?.status !== 401 || request.url?.includes('/auth/refresh')) throw error;
   request._retried = true;
   const storedRt = authStore.getRefreshToken();
   refreshRequest ??= api.post<AuthPayload>('/auth/refresh', storedRt ? { refreshToken: storedRt } : {}).then(({ data }) => data).finally(() => { refreshRequest = null; });
-  try { const session = await refreshRequest; authStore.setSession(session.accessToken, session.user, session.refreshToken); request.headers.Authorization = `Bearer ${session.accessToken}`; return api(request); }
+  try {
+    const session = await refreshRequest;
+    authStore.setSession(session.accessToken, session.user, session.refreshToken);
+    request.headers.Authorization = `Bearer ${session.accessToken}`;
+    request.headers['X-Authorization'] = `Bearer ${session.accessToken}`;
+    return api(request);
+  }
   catch (refreshError) { authStore.clear(); throw refreshError; }
 });

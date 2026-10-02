@@ -24,17 +24,26 @@ final class Request
     public static function capture(): self
     {
         $headers = function_exists('getallheaders') ? getallheaders() : [];
+        if (empty($headers) && function_exists('apache_request_headers')) {
+            $headers = apache_request_headers();
+        }
         $normalized = [];
         foreach ($headers as $key => $value) {
             $normalized[strtolower((string) $key)] = (string) $value;
         }
 
         // FastCGI / Apache authorization header fallback
-        if (!isset($normalized['authorization'])) {
-            if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+        if (!isset($normalized['authorization']) || trim($normalized['authorization']) === '') {
+            if (!empty($normalized['x-authorization'])) {
+                $normalized['authorization'] = (string) $normalized['x-authorization'];
+            } elseif (!empty($_SERVER['HTTP_X_AUTHORIZATION'])) {
+                $normalized['authorization'] = (string) $_SERVER['HTTP_X_AUTHORIZATION'];
+            } elseif (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
                 $normalized['authorization'] = (string) $_SERVER['HTTP_AUTHORIZATION'];
-            } elseif (isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+            } elseif (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
                 $normalized['authorization'] = (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+            } elseif (!empty($_SERVER['REDIRECT_REDIRECT_HTTP_AUTHORIZATION'])) {
+                $normalized['authorization'] = (string) $_SERVER['REDIRECT_REDIRECT_HTTP_AUTHORIZATION'];
             }
         }
 
