@@ -49,8 +49,8 @@ final class AdminService
                     COUNT(DISTINCT bu.user_id) user_count,
                     MAX(CASE WHEN bu.is_primary = TRUE THEN u.name END) owner_name,
                     MAX(CASE WHEN bu.is_primary = TRUE THEN u.email END) owner_email,
-                    p.id plan_id, p.name plan_name, p.code plan_code,
-                    s.status subscription_status, s.billing_interval, s.current_period_ends_at,
+                    p.id plan_id, p.name plan_name, p.code plan_code, p.billing_interval,
+                    s.status subscription_status, s.ends_at current_period_ends_at,
                     pn.display_phone_number, pn.verified_name phone_verified_name, pn.quality_rating phone_quality_rating,
                     wa.meta_waba_id, mc.status meta_connection_status
                 FROM businesses b
@@ -62,7 +62,7 @@ final class AdminService
                 LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
                 LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL AND pn.is_default = 1
                 WHERE b.deleted_at IS NULL
-                GROUP BY b.id, b.name, b.slug, b.timezone, b.status, b.created_at, p.id, p.name, p.code, s.status, s.billing_interval, s.current_period_ends_at, pn.display_phone_number, pn.verified_name, pn.quality_rating, wa.meta_waba_id, mc.status
+                GROUP BY b.id, b.name, b.slug, b.timezone, b.status, b.created_at, p.id, p.name, p.code, p.billing_interval, s.status, s.ends_at, pn.display_phone_number, pn.verified_name, pn.quality_rating, wa.meta_waba_id, mc.status
                 ORDER BY b.created_at DESC";
         return array_map(static fn (array $row) => [
             'id' => $row['id'],
@@ -315,8 +315,8 @@ final class AdminService
                 $subId = Uuid::v4();
                 $now = gmdate('Y-m-d H:i:s');
                 $ends = gmdate('Y-m-d H:i:s', time() + (30 * 86400));
-                $this->db->prepare("INSERT INTO subscriptions (id, business_id, plan_id, status, billing_interval, starts_at, current_period_starts_at, current_period_ends_at, limits, metadata, created_at, updated_at) VALUES (?, ?, ?, 'active', 'month', ?, ?, ?, ?, '{}', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
-                    $subId, $businessId, $planId, $now, $now, $ends, $limits
+                $this->db->prepare("INSERT INTO subscriptions (id, business_id, plan_id, provider, status, starts_at, ends_at, created_at, updated_at) VALUES (?, ?, ?, 'manual', 'active', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
+                    $subId, $businessId, $planId, $now, $ends
                 ]);
             }
 
@@ -355,9 +355,9 @@ final class AdminService
 
         $this->db->beginTransaction();
         try {
-            $this->db->prepare("UPDATE subscriptions SET status = 'cancelled', cancelled_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE business_id = ? AND status IN ('active', 'trialing')")->execute([$businessId]);
-            $this->db->prepare("INSERT INTO subscriptions (id, business_id, plan_id, status, billing_interval, starts_at, current_period_starts_at, current_period_ends_at, limits, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
-                $subscriptionId, $businessId, $planId, $status, $billingInterval, $startsAt, $startsAt, $endsAt, $plan['limits'] ?? '{}'
+            $this->db->prepare("UPDATE subscriptions SET status = 'cancelled', updated_at = UTC_TIMESTAMP() WHERE business_id = ? AND status IN ('active', 'trialing')")->execute([$businessId]);
+            $this->db->prepare("INSERT INTO subscriptions (id, business_id, plan_id, provider, status, starts_at, ends_at, created_at, updated_at) VALUES (?, ?, ?, 'manual', ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
+                $subscriptionId, $businessId, $planId, $status, $startsAt, $endsAt
             ]);
             $this->audit->record($businessId, $actorId, 'admin.subscription.assigned', 'subscription', $subscriptionId, [
                 'plan_id' => $planId, 'plan_name' => $plan['name'], 'billing_interval' => $billingInterval, 'current_period_ends_at' => $endsAt

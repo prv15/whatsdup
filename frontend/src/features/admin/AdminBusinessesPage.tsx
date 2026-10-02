@@ -156,6 +156,13 @@ export function AdminBusinessesPage() {
         />
       )}
 
+      {query.isError && (
+        <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <p className="font-semibold">Could not load businesses.</p>
+          <p className="mt-1 text-xs opacity-90">{apiError(query.error)}</p>
+        </div>
+      )}
+
       <section className="mt-8 overflow-hidden rounded-2xl border border-line bg-white">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1000px] text-left text-sm">
