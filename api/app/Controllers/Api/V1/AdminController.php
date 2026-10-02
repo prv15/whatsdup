@@ -60,4 +60,79 @@ final class AdminController
             $request->attributes['identity']['id'],
         )];
     }
+
+    public function assignBusinessPlan(Request $request): array
+    {
+        return ['data' => $this->admin->assignBusinessPlan(
+            (string) ($request->attributes['route']['id'] ?? ''),
+            $request->json(),
+            $request->attributes['identity']['id'],
+        )];
+    }
+
+    public function metaConnections(): array
+    {
+        return ['data' => $this->admin->metaConnections()];
+    }
+
+    public function queueHealth(): array
+    {
+        return ['data' => $this->admin->queueHealth()];
+    }
+
+    public function failedJobs(Request $request): array
+    {
+        $limit = (int) ($request->query['limit'] ?? 50);
+        return ['data' => $this->admin->failedJobs($limit)];
+    }
+
+    public function retryJob(Request $request): array
+    {
+        $id = (int) ($request->attributes['route']['id'] ?? 0);
+        $ok = $this->admin->retryJob($id);
+        return ['data' => ['success' => $ok, 'jobId' => $id]];
+    }
+
+    public function retryAllJobs(): array
+    {
+        $retried = $this->admin->retryAllFailed();
+        return ['data' => ['retriedCount' => $retried]];
+    }
+
+    public function clearStaleLocks(): array
+    {
+        $reclaimed = $this->admin->clearStaleLocks();
+        return ['data' => ['reclaimedLocks' => $reclaimed]];
+    }
+
+    public function updateUserStatus(Request $request): array
+    {
+        return ['data' => $this->admin->updateUserStatus(
+            (string) ($request->attributes['route']['id'] ?? ''),
+            (string) ($request->json()['status'] ?? ''),
+            $request->attributes['identity']['id'],
+        )];
+    }
+
+    public function resetUserPassword(Request $request): array
+    {
+        return ['data' => $this->admin->resetUserPassword(
+            (string) ($request->attributes['route']['id'] ?? ''),
+            (string) ($request->json()['password'] ?? ''),
+            $request->attributes['identity']['id'],
+        )];
+    }
+
+    public function revokeUserSessions(Request $request): array
+    {
+        return ['data' => $this->admin->revokeUserSessions(
+            (string) ($request->attributes['route']['id'] ?? ''),
+            $request->attributes['identity']['id'],
+        )];
+    }
+
+    public function auditLogs(Request $request): array
+    {
+        return ['data' => $this->admin->auditLogs($request->query)];
+    }
 }

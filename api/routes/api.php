@@ -54,3 +54,14 @@ $router->add('GET', '/api/v1/admin/users', [$adminController, 'users'], [$authen
 $router->add('GET', '/api/v1/admin/plans', [$adminController, 'plans'], [$authenticate, $permission('plans.view')]);
 $router->add('POST', '/api/v1/admin/plans', [$adminController, 'createPlan'], [$authenticate, $permission('plans.manage')]);
 $router->add('PUT', '/api/v1/admin/plans/{id}', [$adminController, 'updatePlan'], [$authenticate, $permission('plans.manage')]);
+$router->add('POST', '/api/v1/admin/businesses/{id}/plan', [$adminController, 'assignBusinessPlan'], [$authenticate, $permission('businesses.update')]);
+$router->add('GET', '/api/v1/admin/meta-connections', [$adminController, 'metaConnections'], [$authenticate, $permission('meta_connections.view_all')]);
+$router->add('GET', '/api/v1/admin/queue/health', [$adminController, 'queueHealth'], [$authenticate, $permission('queue.view')]);
+$router->add('GET', '/api/v1/admin/queue/failed', [$adminController, 'failedJobs'], [$authenticate, $permission('queue.view')]);
+$router->add('POST', '/api/v1/admin/queue/retry/{id}', [$adminController, 'retryJob'], [$authenticate, $permission('queue.view')]);
+$router->add('POST', '/api/v1/admin/queue/retry-all', [$adminController, 'retryAllJobs'], [$authenticate, $permission('queue.view')]);
+$router->add('POST', '/api/v1/admin/queue/clear-stale', [$adminController, 'clearStaleLocks'], [$authenticate, $permission('queue.view')]);
+$router->add('PATCH', '/api/v1/admin/users/{id}/status', [$adminController, 'updateUserStatus'], [$authenticate, $permission('users.manage')]);
+$router->add('POST', '/api/v1/admin/users/{id}/reset-password', [$adminController, 'resetUserPassword'], [$authenticate, $permission('users.manage')]);
+$router->add('POST', '/api/v1/admin/users/{id}/revoke-sessions', [$adminController, 'revokeUserSessions'], [$authenticate, $permission('users.manage')]);
+$router->add('GET', '/api/v1/admin/audit-logs', [$adminController, 'auditLogs'], [$authenticate, $permission('audit_logs.view')]);

@@ -12,8 +12,11 @@ use WhatstheUp\Support\Uuid;
 
 final class AdminService
 {
+    private QueueService $queue;
+
     public function __construct(private readonly PDO $db, private readonly AuditService $audit)
     {
+        $this->queue = new QueueService($this->db);
     }
 
     public function dashboard(): array
@@ -25,6 +28,8 @@ final class AdminService
             'activeSessions' => (int) $this->db->query("SELECT COUNT(*) FROM user_sessions WHERE revoked_at IS NULL AND expires_at > UTC_TIMESTAMP()")->fetchColumn(),
             'queuedJobs' => (int) $this->db->query("SELECT COUNT(*) FROM queue_jobs WHERE status IN ('ready', 'reserved')")->fetchColumn(),
             'failedJobs' => (int) $this->db->query("SELECT COUNT(*) FROM failed_jobs WHERE retried_at IS NULL")->fetchColumn(),
+            'connectedWhatsApp' => (int) $this->db->query("SELECT COUNT(*) FROM whatsapp_phone_numbers WHERE deleted_at IS NULL")->fetchColumn(),
+            'totalCampaigns' => (int) $this->db->query("SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NULL")->fetchColumn(),
         ];
     }
 
@@ -33,27 +38,60 @@ final class AdminService
         $sql = "SELECT b.id, b.name, b.slug, b.timezone, b.status, b.created_at,
                     COUNT(DISTINCT bu.user_id) user_count,
                     MAX(CASE WHEN bu.is_primary = TRUE THEN u.name END) owner_name,
-                    MAX(CASE WHEN bu.is_primary = TRUE THEN u.email END) owner_email
+                    MAX(CASE WHEN bu.is_primary = TRUE THEN u.email END) owner_email,
+                    p.id plan_id, p.name plan_name, p.code plan_code,
+                    s.status subscription_status, s.billing_interval, s.current_period_ends_at,
+                    pn.display_phone_number, pn.verified_name phone_verified_name, pn.quality_rating phone_quality_rating,
+                    wa.meta_waba_id, mc.status meta_connection_status
                 FROM businesses b
                 LEFT JOIN business_users bu ON bu.business_id = b.id
                 LEFT JOIN users u ON u.id = bu.user_id
+                LEFT JOIN subscriptions s ON s.business_id = b.id AND s.status IN ('active', 'trialing')
+                LEFT JOIN plans p ON p.id = s.plan_id
+                LEFT JOIN meta_connections mc ON mc.business_id = b.id AND mc.deleted_at IS NULL
+                LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+                LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL AND pn.is_default = 1
                 WHERE b.deleted_at IS NULL
-                GROUP BY b.id, b.name, b.slug, b.timezone, b.status, b.created_at
+                GROUP BY b.id, b.name, b.slug, b.timezone, b.status, b.created_at, p.id, p.name, p.code, s.status, s.billing_interval, s.current_period_ends_at, pn.display_phone_number, pn.verified_name, pn.quality_rating, wa.meta_waba_id, mc.status
                 ORDER BY b.created_at DESC";
         return array_map(static fn (array $row) => [
-            'id' => $row['id'], 'name' => $row['name'], 'slug' => $row['slug'], 'timezone' => $row['timezone'],
-            'status' => $row['status'], 'ownerName' => $row['owner_name'], 'ownerEmail' => $row['owner_email'],
-            'userCount' => (int) $row['user_count'], 'createdAt' => $row['created_at'],
+            'id' => $row['id'],
+            'name' => $row['name'],
+            'slug' => $row['slug'],
+            'timezone' => $row['timezone'],
+            'status' => $row['status'],
+            'ownerName' => $row['owner_name'],
+            'ownerEmail' => $row['owner_email'],
+            'userCount' => (int) $row['user_count'],
+            'createdAt' => $row['created_at'],
+            'plan' => $row['plan_id'] ? [
+                'id' => $row['plan_id'],
+                'name' => $row['plan_name'],
+                'code' => $row['plan_code'],
+                'status' => $row['subscription_status'],
+                'billingInterval' => $row['billing_interval'],
+                'currentPeriodEndsAt' => $row['current_period_ends_at'],
+            ] : null,
+            'whatsapp' => $row['display_phone_number'] ? [
+                'phoneNumber' => $row['display_phone_number'],
+                'verifiedName' => $row['phone_verified_name'],
+                'qualityRating' => $row['phone_quality_rating'],
+                'wabaId' => $row['meta_waba_id'],
+                'connectionStatus' => $row['meta_connection_status'] ?? 'connected',
+            ] : null,
         ], $this->db->query($sql)->fetchAll());
     }
 
     public function users(): array
     {
         $sql = "SELECT u.id, u.name, u.email, u.status, u.email_verified_at, u.last_login_at, u.created_at,
-                    GROUP_CONCAT(DISTINCT COALESCE(b.name, 'Platform') ORDER BY b.name SEPARATOR ', ') workspaces
+                    GROUP_CONCAT(DISTINCT COALESCE(b.name, 'Platform') ORDER BY b.name SEPARATOR ', ') workspaces,
+                    MAX(CASE WHEN r.name = 'Super Admin' THEN 'Super Admin' ELSE r.name END) role_name
                 FROM users u
                 LEFT JOIN business_users bu ON bu.user_id = u.id
                 LEFT JOIN businesses b ON b.id = bu.business_id
+                LEFT JOIN user_roles ur ON ur.user_id = u.id
+                LEFT JOIN roles r ON r.id = ur.role_id
                 WHERE u.deleted_at IS NULL
                 GROUP BY u.id, u.name, u.email, u.status, u.email_verified_at, u.last_login_at, u.created_at
                 ORDER BY u.created_at DESC";
@@ -61,6 +99,7 @@ final class AdminService
             'id' => $row['id'], 'name' => $row['name'], 'email' => $row['email'], 'status' => $row['status'],
             'emailVerified' => $row['email_verified_at'] !== null, 'lastLoginAt' => $row['last_login_at'],
             'createdAt' => $row['created_at'], 'workspaces' => $row['workspaces'] ?: 'Platform',
+            'roleName' => $row['role_name'] ?? 'Viewer',
         ], $this->db->query($sql)->fetchAll());
     }
 
@@ -213,6 +252,8 @@ final class AdminService
         $email = mb_strtolower(trim((string) ($input['ownerEmail'] ?? '')));
         $password = (string) ($input['ownerPassword'] ?? '');
         $timezone = trim((string) ($input['timezone'] ?? 'UTC'));
+        $planId = trim((string) ($input['planId'] ?? ''));
+
         if ($name === '' || mb_strlen($name) > 190 || $ownerName === '' || mb_strlen($ownerName) > 190) {
             throw new HttpException(422, 'Business and owner names are required.', 'validation_failed');
         }
@@ -230,6 +271,20 @@ final class AdminService
         if ($exists->fetchColumn()) {
             throw new HttpException(409, 'A user with this email already exists.', 'email_exists');
         }
+
+        // Resolve plan
+        if ($planId === '') {
+            $planStmt = $this->db->query("SELECT id, limits FROM plans WHERE code = 'launch' AND status = 'active' LIMIT 1");
+            $defaultPlan = $planStmt->fetch();
+            $planId = $defaultPlan['id'] ?? null;
+            $limits = $defaultPlan['limits'] ?? '{}';
+        } else {
+            $planStmt = $this->db->prepare("SELECT id, limits FROM plans WHERE id = ? LIMIT 1");
+            $planStmt->execute([$planId]);
+            $chosenPlan = $planStmt->fetch();
+            $limits = $chosenPlan['limits'] ?? '{}';
+        }
+
         $businessId = Uuid::v4();
         $userId = Uuid::v4();
         $slugBase = strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', $name) ?? '', '-')) ?: 'business';
@@ -244,13 +299,74 @@ final class AdminService
             if ($role->rowCount() !== 1) {
                 throw new \RuntimeException('Business Owner role has not been seeded.');
             }
-            $this->audit->record($businessId, $actorId, 'admin.business.created', 'business', $businessId, ['owner_user_id' => $userId, 'owner_email' => $email]);
+
+            // Assign plan subscription
+            if ($planId) {
+                $subId = Uuid::v4();
+                $now = gmdate('Y-m-d H:i:s');
+                $ends = gmdate('Y-m-d H:i:s', time() + (30 * 86400));
+                $this->db->prepare("INSERT INTO subscriptions (id, business_id, plan_id, status, billing_interval, starts_at, current_period_starts_at, current_period_ends_at, limits, metadata, created_at, updated_at) VALUES (?, ?, ?, 'active', 'month', ?, ?, ?, ?, '{}', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
+                    $subId, $businessId, $planId, $now, $now, $ends, $limits
+                ]);
+            }
+
+            $this->audit->record($businessId, $actorId, 'admin.business.created', 'business', $businessId, ['owner_user_id' => $userId, 'owner_email' => $email, 'plan_id' => $planId]);
             $this->db->commit();
         } catch (Throwable $exception) {
             $this->db->rollBack();
             throw $exception;
         }
         return ['id' => $businessId, 'name' => $name, 'slug' => $slug, 'timezone' => $timezone, 'status' => 'active', 'ownerName' => $ownerName, 'ownerEmail' => $email, 'userCount' => 1, 'createdAt' => gmdate('Y-m-d H:i:s')];
+    }
+
+    public function assignBusinessPlan(string $businessId, array $input, string $actorId): array
+    {
+        $planId = trim((string) ($input['planId'] ?? ''));
+        $billingInterval = isset($input['billingInterval']) && in_array($input['billingInterval'], ['month', 'year'], true) ? (string) $input['billingInterval'] : 'month';
+        $status = isset($input['status']) && in_array($input['status'], ['active', 'trialing', 'past_due', 'cancelled'], true) ? (string) $input['status'] : 'active';
+        $expiresDays = isset($input['expiresDays']) && (int) $input['expiresDays'] > 0 ? (int) $input['expiresDays'] : ($billingInterval === 'year' ? 365 : 30);
+
+        $biz = $this->db->prepare('SELECT id, name FROM businesses WHERE id = ? AND deleted_at IS NULL LIMIT 1');
+        $biz->execute([$businessId]);
+        if (!$biz->fetch()) {
+            throw new HttpException(404, 'Business not found.', 'not_found');
+        }
+
+        $planStmt = $this->db->prepare('SELECT id, name, code, limits FROM plans WHERE id = ? LIMIT 1');
+        $planStmt->execute([$planId]);
+        $plan = $planStmt->fetch();
+        if (!$plan) {
+            throw new HttpException(404, 'Plan not found.', 'not_found');
+        }
+
+        $startsAt = gmdate('Y-m-d H:i:s');
+        $endsAt = gmdate('Y-m-d H:i:s', time() + ($expiresDays * 86400));
+        $subscriptionId = Uuid::v4();
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare("UPDATE subscriptions SET status = 'cancelled', cancelled_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE business_id = ? AND status IN ('active', 'trialing')")->execute([$businessId]);
+            $this->db->prepare("INSERT INTO subscriptions (id, business_id, plan_id, status, billing_interval, starts_at, current_period_starts_at, current_period_ends_at, limits, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([
+                $subscriptionId, $businessId, $planId, $status, $billingInterval, $startsAt, $startsAt, $endsAt, $plan['limits'] ?? '{}'
+            ]);
+            $this->audit->record($businessId, $actorId, 'admin.subscription.assigned', 'subscription', $subscriptionId, [
+                'plan_id' => $planId, 'plan_name' => $plan['name'], 'billing_interval' => $billingInterval, 'current_period_ends_at' => $endsAt
+            ]);
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+
+        return [
+            'subscriptionId' => $subscriptionId,
+            'businessId' => $businessId,
+            'planId' => $planId,
+            'planName' => $plan['name'],
+            'status' => $status,
+            'billingInterval' => $billingInterval,
+            'currentPeriodEndsAt' => $endsAt,
+        ];
     }
 
     public function updateBusinessStatus(string $businessId, string $status, string $actorId): array
@@ -265,5 +381,174 @@ final class AdminService
         }
         $this->audit->record($businessId, $actorId, 'admin.business.status_changed', 'business', $businessId, ['status' => $status]);
         return ['id' => $businessId, 'status' => $status];
+    }
+
+    public function metaConnections(): array
+    {
+        $sql = "SELECT mc.id, mc.business_id, mc.meta_business_id, mc.app_id, mc.status connection_status,
+                    mc.connected_at, mc.last_synced_at, mc.last_tested_at, mc.last_error_message,
+                    b.name business_name, b.slug business_slug,
+                    wa.meta_waba_id, wa.name waba_name, wa.currency, wa.review_status waba_review_status,
+                    pn.meta_phone_number_id, pn.display_phone_number, pn.verified_name, pn.quality_rating,
+                    pn.name_status, pn.is_default,
+                    ws.status webhook_status
+                FROM meta_connections mc
+                JOIN businesses b ON b.id = mc.business_id
+                LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+                LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL
+                LEFT JOIN webhook_subscriptions ws ON ws.waba_account_id = wa.id
+                WHERE mc.deleted_at IS NULL AND b.deleted_at IS NULL
+                ORDER BY mc.connected_at DESC";
+        return array_map(static fn (array $row) => [
+            'id' => $row['id'],
+            'businessId' => $row['business_id'],
+            'businessName' => $row['business_name'],
+            'businessSlug' => $row['business_slug'],
+            'connectionStatus' => $row['connection_status'],
+            'metaBusinessId' => $row['meta_business_id'],
+            'wabaId' => $row['meta_waba_id'],
+            'wabaName' => $row['waba_name'],
+            'wabaReviewStatus' => $row['waba_review_status'],
+            'phoneNumberId' => $row['meta_phone_number_id'],
+            'displayPhoneNumber' => $row['display_phone_number'],
+            'verifiedName' => $row['verified_name'],
+            'qualityRating' => $row['quality_rating'],
+            'nameStatus' => $row['name_status'],
+            'webhookStatus' => $row['webhook_status'] ?? 'pending',
+            'lastErrorMessage' => $row['last_error_message'],
+            'connectedAt' => $row['connected_at'],
+            'lastSyncedAt' => $row['last_synced_at'],
+        ], $this->db->query($sql)->fetchAll());
+    }
+
+    public function queueHealth(): array
+    {
+        return $this->queue->health();
+    }
+
+    public function failedJobs(int $limit = 50): array
+    {
+        $stmt = $this->db->prepare("SELECT fj.id, fj.queue_job_id, fj.business_id, fj.queue, fj.job_type, fj.error_type, fj.error_message, fj.failed_at, fj.retried_at, b.name business_name
+            FROM failed_jobs fj
+            LEFT JOIN businesses b ON b.id = fj.business_id
+            ORDER BY fj.failed_at DESC LIMIT ?");
+        $stmt->bindValue(1, min(100, max(1, $limit)), PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
+    public function retryJob(int $id): bool
+    {
+        return $this->queue->retry($id);
+    }
+
+    public function retryAllFailed(): int
+    {
+        return $this->queue->retryAll();
+    }
+
+    public function clearStaleLocks(): int
+    {
+        return $this->queue->reclaimStaleLocks();
+    }
+
+    public function updateUserStatus(string $userId, string $status, string $actorId): array
+    {
+        if (!in_array($status, ['active', 'suspended'], true)) {
+            throw new HttpException(422, 'Status must be active or suspended.', 'validation_failed');
+        }
+        $stmt = $this->db->prepare("UPDATE users SET status = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND deleted_at IS NULL");
+        $stmt->execute([$status, $userId]);
+        if ($stmt->rowCount() !== 1) {
+            throw new HttpException(404, 'User not found.', 'not_found');
+        }
+        if ($status === 'suspended') {
+            $this->db->prepare("UPDATE user_sessions SET revoked_at = UTC_TIMESTAMP() WHERE user_id = ? AND revoked_at IS NULL")->execute([$userId]);
+        }
+        $this->audit->record(null, $actorId, 'admin.user.status_changed', 'user', $userId, ['status' => $status]);
+        return ['id' => $userId, 'status' => $status];
+    }
+
+    public function resetUserPassword(string $userId, string $newPassword, string $actorId): array
+    {
+        if (strlen($newPassword) < 12) {
+            throw new HttpException(422, 'Password must be at least 12 characters.', 'validation_failed');
+        }
+        $hash = password_hash($newPassword, PASSWORD_ARGON2ID);
+        $stmt = $this->db->prepare("UPDATE users SET password_hash = ?, failed_login_attempts = 0, locked_until = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ? AND deleted_at IS NULL");
+        $stmt->execute([$hash, $userId]);
+        if ($stmt->rowCount() !== 1) {
+            throw new HttpException(404, 'User not found.', 'not_found');
+        }
+        $this->db->prepare("UPDATE user_sessions SET revoked_at = UTC_TIMESTAMP() WHERE user_id = ? AND revoked_at IS NULL")->execute([$userId]);
+        $this->audit->record(null, $actorId, 'admin.user.password_reset', 'user', $userId, []);
+        return ['message' => 'Password reset successfully and sessions revoked.'];
+    }
+
+    public function revokeUserSessions(string $userId, string $actorId): array
+    {
+        $stmt = $this->db->prepare("UPDATE user_sessions SET revoked_at = UTC_TIMESTAMP() WHERE user_id = ? AND revoked_at IS NULL");
+        $stmt->execute([$userId]);
+        $count = $stmt->rowCount();
+        $this->audit->record(null, $actorId, 'admin.user.sessions_revoked', 'user', $userId, ['revoked_sessions' => $count]);
+        return ['revoked' => $count];
+    }
+
+    public function auditLogs(array $filters = []): array
+    {
+        $limit = min(100, max(1, (int) ($filters['limit'] ?? 50)));
+        $offset = max(0, (int) ($filters['offset'] ?? 0));
+        $action = trim((string) ($filters['action'] ?? ''));
+        $businessId = trim((string) ($filters['businessId'] ?? ''));
+
+        $where = [];
+        $params = [];
+
+        if ($action !== '') {
+            $where[] = 'al.action LIKE ?';
+            $params[] = '%' . $action . '%';
+        }
+        if ($businessId !== '') {
+            $where[] = 'al.business_id = ?';
+            $params[] = $businessId;
+        }
+
+        $whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+        $sql = "SELECT al.id, al.business_id, al.user_id, al.action, al.subject_type, al.subject_id,
+                    al.metadata, al.created_at,
+                    b.name business_name, u.name user_name, u.email user_email
+                FROM audit_logs al
+                LEFT JOIN businesses b ON b.id = al.business_id
+                LEFT JOIN users u ON u.id = al.user_id
+                {$whereClause}
+                ORDER BY al.created_at DESC
+                LIMIT ? OFFSET ?";
+
+        $stmt = $this->db->prepare($sql);
+        $idx = 1;
+        foreach ($params as $p) {
+            $stmt->bindValue($idx++, $p);
+        }
+        $stmt->bindValue($idx++, $limit, PDO::PARAM_INT);
+        $stmt->bindValue($idx++, $offset, PDO::PARAM_INT);
+        $stmt->execute();
+
+        $rows = $stmt->fetchAll();
+        return array_map(static function (array $r) {
+            return [
+                'id' => $r['id'],
+                'businessId' => $r['business_id'],
+                'businessName' => $r['business_name'],
+                'userId' => $r['user_id'],
+                'userName' => $r['user_name'],
+                'userEmail' => $r['user_email'],
+                'action' => $r['action'],
+                'subjectType' => $r['subject_type'],
+                'subjectId' => $r['subject_id'],
+                'metadata' => json_decode((string) $r['metadata'], true) ?: [],
+                'createdAt' => $r['created_at'],
+            ];
+        }, $rows);
     }
 }
