@@ -32,28 +32,23 @@ export function DashboardPage() {
     queryFn: async () => (await api.get<{ data: WorkspaceDashboard }>('/dashboard')).data.data,
   });
 
-  const metaStatus = useQuery({
-    queryKey: ['meta-status'],
-    queryFn: async () => (await api.get<{ data: { metaBusinessId?: string; status: string } }>('/meta/status')).data.data,
-  });
-
   const data = dashboard.data;
   const quota = data?.quota;
-  const metaBusinessId = data?.metaBusinessId || metaStatus.data?.metaBusinessId;
+  const metaBusinessId = data?.metaBusinessId;
   const isMetaConnected = data?.metaStatus === 'connected';
 
   const cards = [
-    ['Messages today', data?.metrics.messagesToday ?? 0, MessageSquareText],
-    ['Contacts', data?.metrics.contacts ?? 0, Users],
-    ['Approved templates', data?.metrics.approvedTemplates ?? 0, FileCheck2],
-    ['Scheduled', data?.metrics.scheduledCampaigns ?? 0, CalendarClock],
+    ['Messages today', data?.metrics?.messagesToday ?? 0, MessageSquareText],
+    ['Contacts', data?.metrics?.contacts ?? 0, Users],
+    ['Approved templates', data?.metrics?.approvedTemplates ?? 0, FileCheck2],
+    ['Scheduled', data?.metrics?.scheduledCampaigns ?? 0, CalendarClock],
   ] as const;
 
-  const complete = [isMetaConnected, (data?.metrics.contacts ?? 0) > 0, (data?.metrics.approvedTemplates ?? 0) > 0];
+  const complete = [isMetaConnected, (data?.metrics?.contacts ?? 0) > 0, (data?.metrics?.approvedTemplates ?? 0) > 0];
   const progress = Math.round((complete.filter(Boolean).length / complete.length) * 100);
 
   const next = isMetaConnected
-    ? data?.metrics.contacts
+    ? (data?.metrics?.contacts ?? 0) > 0
       ? {
           to: '/templates',
           title: 'Choose an approved template',
@@ -113,7 +108,6 @@ export function DashboardPage() {
       await api.post('/meta/verification/initiate');
       setLocalInitiated(true);
       await queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      await queryClient.invalidateQueries({ queryKey: ['meta-status'] });
 
       const targetUrl = metaBusinessId
         ? `https://business.facebook.com/settings/security?business_id=${encodeURIComponent(metaBusinessId)}`
@@ -145,7 +139,6 @@ export function DashboardPage() {
         data: { businessVerificationStatus?: string; tier?: string; messagingLimitTier?: string };
       }>('/meta/sync-status');
       await queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      await queryClient.invalidateQueries({ queryKey: ['meta-status'] });
 
       const newTier = res.data.data.tier || res.data.data.messagingLimitTier;
       const newStatus = res.data.data.businessVerificationStatus;

@@ -30,17 +30,34 @@ final class MetaConnectionService
 
     public function status(string $businessId): array
     {
-        $statement = $this->db->prepare("SELECT mc.id, mc.status, mc.meta_business_id, mc.business_verification_status, mc.verification_initiated_at, mc.connected_at, mc.last_synced_at, mc.last_tested_at, mc.last_error_code, mc.last_error_message,
-                wa.meta_waba_id, wa.name waba_name, wa.currency, wa.review_status,
-                pn.meta_phone_number_id, pn.display_phone_number, pn.verified_name, pn.quality_rating, pn.name_status, pn.registration_status, pn.is_default, pn.messaging_limit_tier,
-                ws.status webhook_status
-            FROM meta_connections mc
-            LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
-            LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL
-            LEFT JOIN webhook_subscriptions ws ON ws.waba_account_id = wa.id
-            WHERE mc.business_id = ? AND mc.deleted_at IS NULL LIMIT 1");
-        $statement->execute([$businessId]);
-        $row = $statement->fetch();
+        $row = null;
+        try {
+            $statement = $this->db->prepare("SELECT mc.id, mc.status, mc.meta_business_id, mc.business_verification_status, mc.verification_initiated_at, mc.connected_at, mc.last_synced_at, mc.last_tested_at, mc.last_error_code, mc.last_error_message,
+                    wa.meta_waba_id, wa.name waba_name, wa.currency, wa.review_status,
+                    pn.meta_phone_number_id, pn.display_phone_number, pn.verified_name, pn.quality_rating, pn.name_status, pn.registration_status, pn.is_default, pn.messaging_limit_tier,
+                    ws.status webhook_status
+                FROM meta_connections mc
+                LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+                LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL
+                LEFT JOIN webhook_subscriptions ws ON ws.waba_account_id = wa.id
+                WHERE mc.business_id = ? AND mc.deleted_at IS NULL LIMIT 1");
+            $statement->execute([$businessId]);
+            $row = $statement->fetch();
+        } catch (\Throwable) {
+            try {
+                $statement = $this->db->prepare("SELECT mc.id, mc.status, mc.meta_business_id, mc.connected_at, mc.last_synced_at, mc.last_tested_at, mc.last_error_code, mc.last_error_message,
+                        wa.meta_waba_id, wa.name waba_name, wa.currency, wa.review_status,
+                        pn.meta_phone_number_id, pn.display_phone_number, pn.verified_name, pn.quality_rating, pn.name_status, pn.registration_status, pn.is_default,
+                        ws.status webhook_status
+                    FROM meta_connections mc
+                    LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+                    LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL
+                    LEFT JOIN webhook_subscriptions ws ON ws.waba_account_id = wa.id
+                    WHERE mc.business_id = ? AND mc.deleted_at IS NULL LIMIT 1");
+                $statement->execute([$businessId]);
+                $row = $statement->fetch();
+            } catch (\Throwable) {}
+        }
         if (!$row) {
             return ['status' => 'not_connected', 'waba' => null, 'phone' => null, 'webhookStatus' => 'pending', 'connectedAt' => null, 'lastSyncedAt' => null, 'lastTestedAt' => null, 'error' => null];
         }

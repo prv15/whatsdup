@@ -30,7 +30,28 @@ function PlatformProtected() { const location = useLocation(); const { user } = 
 function HomeRedirect() { const { user } = useSyncExternalStore(authStore.subscribe, authStore.getSnapshot); return <Navigate to={user?.scope === 'platform' ? '/admin' : user ? '/dashboard' : '/login'} replace/>; }
 export function App() {
   const [booting, setBooting] = useState(true);
-  useEffect(() => { const storedRt = authStore.getRefreshToken(); api.post<AuthPayload>('/auth/refresh', storedRt ? { refreshToken: storedRt } : {}).then(({ data }) => authStore.setSession(data.accessToken, data.user, data.refreshToken)).catch(() => authStore.clear()).finally(() => setBooting(false)); }, []);
+
+  useEffect(() => {
+    const storedRt = authStore.getRefreshToken();
+    if (!storedRt) {
+      setBooting(false);
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setBooting(false);
+    }, 2500);
+
+    api.post<AuthPayload>('/auth/refresh', { refreshToken: storedRt })
+      .then(({ data }) => authStore.setSession(data.accessToken, data.user, data.refreshToken))
+      .catch(() => authStore.clear())
+      .finally(() => {
+        clearTimeout(timeout);
+        setBooting(false);
+      });
+
+    return () => clearTimeout(timeout);
+  }, []);
+
   if (booting) return <div className="grid min-h-screen place-items-center bg-canvas"><div className="h-10 w-10 animate-pulse rounded-2xl bg-brand-500"/></div>;
   return <Suspense fallback={<div className="grid min-h-screen place-items-center">Loading…</div>}><Routes><Route path="/login" element={<LoginPage/>}/><Route path="/forgot-password" element={<ForgotPasswordPage/>}/><Route path="/reset-password" element={<ResetPasswordPage/>}/><Route path="/privacy" element={<PrivacyPolicyPage/>}/><Route path="/terms" element={<TermsPage/>}/><Route path="/data-deletion" element={<DataDeletionPage/>}/><Route element={<BusinessProtected/>}><Route path="/dashboard" element={<DashboardPage/>}/><Route path="/meta" element={<MetaConnectionPage/>}/><Route path="/contacts" element={<ContactsPage/>}/><Route path="/inbox" element={<InboxPage/>}/><Route path="/templates" element={<TemplatesPage/>}/><Route path="/campaigns" element={<CampaignsPage/>}/>{['reports', 'settings'].map((route) => <Route key={route} path={`/${route}`} element={<MilestoneNoticePage title={route[0]!.toUpperCase() + route.slice(1)}/>}/>)}</Route><Route element={<PlatformProtected/>}><Route path="/admin" element={<AdminDashboardPage/>}/><Route path="/admin/businesses" element={<AdminBusinessesPage/>}/><Route path="/admin/meta-connections" element={<AdminMetaConnectionsPage/>}/><Route path="/admin/queue" element={<AdminQueuePage/>}/><Route path="/admin/users" element={<AdminUsersPage/>}/><Route path="/admin/plans" element={<AdminPlansPage/>}/><Route path="/admin/audit-logs" element={<AdminAuditLogsPage/>}/></Route><Route path="*" element={<HomeRedirect/>}/></Routes></Suspense>;
 }

@@ -3,7 +3,7 @@ import { authStore } from '../stores/authStore';
 import type { AuthPayload } from '../types/auth';
 const baseURL = import.meta.env.VITE_API_BASE_URL;
 if (!baseURL) throw new Error('VITE_API_BASE_URL is required');
-export const api = axios.create({ baseURL, withCredentials: true, headers: { Accept: 'application/json' } });
+export const api = axios.create({ baseURL, withCredentials: true, timeout: 10000, headers: { Accept: 'application/json' } });
 let refreshRequest: Promise<AuthPayload> | null = null;
 api.interceptors.request.use((config) => {
   const token = authStore.getSnapshot().accessToken;
