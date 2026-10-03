@@ -580,6 +580,302 @@ final class OperationsService
         return preg_match('/^\+[1-9]\d{7,14}$/', $phone) ? $phone : null;
     }
 
+    public function settings(string $businessId, string $userId): array
+    {
+        $bizStmt = $this->db->prepare('SELECT id, name, slug, legal_name, timezone, language, default_country_code, status, created_at FROM businesses WHERE id = ? AND deleted_at IS NULL LIMIT 1');
+        $bizStmt->execute([$businessId]);
+        $business = $bizStmt->fetch();
+        if (!$business) {
+            throw new HttpException(404, 'Business not found.', 'not_found');
+        }
+
+        $teamStmt = $this->db->prepare("SELECT u.id, u.name, u.email, u.status, bu.is_primary, bu.created_at joined_at,
+                r.name role_name
+            FROM business_users bu
+            JOIN users u ON u.id = bu.user_id AND u.deleted_at IS NULL
+            LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.business_id = bu.business_id
+            LEFT JOIN roles r ON r.id = ur.role_id
+            WHERE bu.business_id = ? AND bu.status != 'archived'
+            ORDER BY bu.is_primary DESC, u.created_at ASC");
+        $teamStmt->execute([$businessId]);
+        $teamRows = $teamStmt->fetchAll();
+
+        $team = array_map(static fn (array $row) => [
+            'id' => $row['id'],
+            'name' => $row['name'],
+            'email' => $row['email'],
+            'status' => $row['status'],
+            'isPrimary' => (bool) $row['is_primary'],
+            'role' => $row['role_name'] ?? 'Viewer',
+            'joinedAt' => $row['joined_at'],
+        ], $teamRows);
+
+        $quotaService = $this->quota ?? new QuotaService($this->db);
+        $quota = $quotaService->getUsageOverview($businessId);
+
+        return [
+            'business' => [
+                'id' => $business['id'],
+                'name' => $business['name'],
+                'legalName' => $business['legal_name'],
+                'slug' => $business['slug'],
+                'timezone' => $business['timezone'] ?: 'Asia/Kolkata',
+                'language' => $business['language'] ?: 'en',
+                'defaultCountryCode' => $business['default_country_code'] ?: '+91',
+                'status' => $business['status'],
+                'createdAt' => $business['created_at'],
+            ],
+            'team' => $team,
+            'quota' => $quota,
+        ];
+    }
+
+    public function updateSettings(string $businessId, string $userId, array $input): array
+    {
+        $name = trim((string) ($input['name'] ?? ''));
+        if ($name === '') {
+            throw new HttpException(422, 'Business name is required.', 'validation_failed');
+        }
+        $legalName = $this->cleanText($input['legalName'] ?? null, 190);
+        $timezone = trim((string) ($input['timezone'] ?? 'Asia/Kolkata')) ?: 'Asia/Kolkata';
+        $language = trim((string) ($input['language'] ?? 'en')) ?: 'en';
+        $defaultCountryCode = trim((string) ($input['defaultCountryCode'] ?? '+91')) ?: '+91';
+
+        $stmt = $this->db->prepare('UPDATE businesses SET name = ?, legal_name = ?, timezone = ?, language = ?, default_country_code = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND deleted_at IS NULL');
+        $stmt->execute([$name, $legalName, $timezone, $language, $defaultCountryCode, $businessId]);
+
+        $this->audit->record($businessId, $userId, 'business.profile.updated', 'business', $businessId, [
+            'name' => $name,
+            'timezone' => $timezone,
+        ]);
+
+        return $this->settings($businessId, $userId);
+    }
+
+    public function inviteTeamMember(string $businessId, string $userId, array $input): array
+    {
+        $email = mb_strtolower(trim((string) ($input['email'] ?? '')));
+        $name = trim((string) ($input['name'] ?? ''));
+        $roleName = trim((string) ($input['role'] ?? 'Viewer'));
+
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new HttpException(422, 'Enter a valid email address.', 'validation_failed');
+        }
+        if ($name === '') {
+            throw new HttpException(422, 'Name is required.', 'validation_failed');
+        }
+
+        $roleStmt = $this->db->prepare("SELECT id FROM roles WHERE name = ? AND scope = 'business' LIMIT 1");
+        $roleStmt->execute([$roleName]);
+        $roleId = $roleStmt->fetchColumn();
+        if (!$roleId) {
+            $roleName = 'Viewer';
+            $roleStmt->execute([$roleName]);
+            $roleId = $roleStmt->fetchColumn();
+        }
+
+        $userStmt = $this->db->prepare('SELECT id, status FROM users WHERE email = ? AND deleted_at IS NULL LIMIT 1');
+        $userStmt->execute([$email]);
+        $existingUser = $userStmt->fetch();
+
+        $this->db->beginTransaction();
+        try {
+            if ($existingUser) {
+                $targetUserId = (string) $existingUser['id'];
+                $checkBizUser = $this->db->prepare('SELECT status FROM business_users WHERE business_id = ? AND user_id = ?');
+                $checkBizUser->execute([$businessId, $targetUserId]);
+                $bizUserRow = $checkBizUser->fetch();
+                if ($bizUserRow && $bizUserRow['status'] === 'active') {
+                    throw new HttpException(409, 'This user is already a member of your workspace.', 'already_member');
+                }
+
+                if ($bizUserRow) {
+                    $this->db->prepare("UPDATE business_users SET status = 'active', updated_at = UTC_TIMESTAMP() WHERE business_id = ? AND user_id = ?")->execute([$businessId, $targetUserId]);
+                } else {
+                    $this->db->prepare("INSERT INTO business_users (business_id, user_id, status, is_primary, created_at, updated_at) VALUES (?, ?, 'active', FALSE, UTC_TIMESTAMP(), UTC_TIMESTAMP())")->execute([$businessId, $targetUserId]);
+                }
+            } else {
+                $targetUserId = Uuid::v4();
+                $tempPassword = bin2hex(random_bytes(16));
+                $this->db->prepare("INSERT INTO users (id, name, email, password_hash, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', UTC_TIMESTAMP(), UTC_TIMESTAMP())")
+                    ->execute([$targetUserId, $name, $email, password_hash($tempPassword, PASSWORD_DEFAULT)]);
+                $this->db->prepare("INSERT INTO business_users (business_id, user_id, status, is_primary, created_at, updated_at) VALUES (?, ?, 'active', FALSE, UTC_TIMESTAMP(), UTC_TIMESTAMP())")
+                    ->execute([$businessId, $targetUserId]);
+            }
+
+            $this->db->prepare('DELETE FROM user_roles WHERE business_id = ? AND user_id = ?')->execute([$businessId, $targetUserId]);
+            $this->db->prepare('INSERT INTO user_roles (business_id, user_id, role_id, assigned_by, created_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP())')->execute([$businessId, $targetUserId, $roleId, $userId]);
+
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+
+        $this->audit->record($businessId, $userId, 'team.member.invited', 'user', $targetUserId, [
+            'email' => $email,
+            'role' => $roleName,
+        ]);
+
+        return $this->settings($businessId, $userId);
+    }
+
+    public function removeTeamMember(string $businessId, string $userId, string $targetUserId): array
+    {
+        $stmt = $this->db->prepare('SELECT is_primary FROM business_users WHERE business_id = ? AND user_id = ?');
+        $stmt->execute([$businessId, $targetUserId]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            throw new HttpException(404, 'Team member not found.', 'not_found');
+        }
+        if ((bool) $row['is_primary']) {
+            throw new HttpException(400, 'Cannot remove the primary workspace owner.', 'cannot_remove_owner');
+        }
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('DELETE FROM user_roles WHERE business_id = ? AND user_id = ?')->execute([$businessId, $targetUserId]);
+            $this->db->prepare('DELETE FROM business_users WHERE business_id = ? AND user_id = ?')->execute([$businessId, $targetUserId]);
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+
+        $this->audit->record($businessId, $userId, 'team.member.removed', 'user', $targetUserId);
+        return $this->settings($businessId, $userId);
+    }
+
+    public function changePassword(string $userId, array $input): array
+    {
+        $currentPassword = (string) ($input['currentPassword'] ?? '');
+        $newPassword = (string) ($input['newPassword'] ?? '');
+
+        if (strlen($newPassword) < 8) {
+            throw new HttpException(422, 'New password must be at least 8 characters long.', 'validation_failed');
+        }
+
+        $stmt = $this->db->prepare('SELECT password_hash FROM users WHERE id = ? AND deleted_at IS NULL LIMIT 1');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch();
+        if (!$user || !password_verify($currentPassword, (string) $user['password_hash'])) {
+            throw new HttpException(422, 'The current password you entered is incorrect.', 'invalid_password');
+        }
+
+        $newHash = password_hash($newPassword, PASSWORD_DEFAULT);
+        $this->db->prepare('UPDATE users SET password_hash = ?, failed_login_attempts = 0, locked_until = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ?')
+            ->execute([$newHash, $userId]);
+
+        return ['message' => 'Password changed successfully.'];
+    }
+
+    public function reports(string $businessId, array $query): array
+    {
+        $days = (int) ($query['days'] ?? 30);
+        if (!in_array($days, [7, 14, 30, 90], true)) {
+            $days = 30;
+        }
+
+        $statsStmt = $this->db->prepare("SELECT
+                COUNT(*) as total_attempts,
+                SUM(CASE WHEN status IN ('sent', 'delivered', 'read') THEN 1 ELSE 0 END) as sent_count,
+                SUM(CASE WHEN status IN ('delivered', 'read') THEN 1 ELSE 0 END) as delivered_count,
+                SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) as read_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count
+            FROM campaign_contacts
+            WHERE business_id = ? AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)");
+        $statsStmt->execute([$businessId, $days]);
+        $stats = $statsStmt->fetch() ?: [];
+
+        $totalAttempts = (int) ($stats['total_attempts'] ?? 0);
+        $sentCount = (int) ($stats['sent_count'] ?? 0);
+        $deliveredCount = (int) ($stats['delivered_count'] ?? 0);
+        $readCount = (int) ($stats['read_count'] ?? 0);
+        $failedCount = (int) ($stats['failed_count'] ?? 0);
+
+        $deliveryRate = $sentCount > 0 ? round(($deliveredCount / $sentCount) * 100, 1) : 0.0;
+        $readRate = $deliveredCount > 0 ? round(($readCount / $deliveredCount) * 100, 1) : 0.0;
+        $failureRate = $totalAttempts > 0 ? round(($failedCount / $totalAttempts) * 100, 1) : 0.0;
+
+        $dailyStmt = $this->db->prepare("SELECT
+                DATE(created_at) as date,
+                SUM(CASE WHEN status IN ('sent', 'delivered', 'read') THEN 1 ELSE 0 END) as sent,
+                SUM(CASE WHEN status IN ('delivered', 'read') THEN 1 ELSE 0 END) as delivered,
+                SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) as read_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM campaign_contacts
+            WHERE business_id = ? AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC");
+        $dailyStmt->execute([$businessId, $days]);
+        $dailyRows = $dailyStmt->fetchAll();
+
+        $failStmt = $this->db->prepare("SELECT
+                COALESCE(failure_code, 'unknown') as code,
+                COALESCE(failure_message, 'Delivery failed or unreachable') as message,
+                COUNT(*) as count
+            FROM campaign_contacts
+            WHERE business_id = ? AND status = 'failed' AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)
+            GROUP BY failure_code, failure_message
+            ORDER BY count DESC
+            LIMIT 5");
+        $failStmt->execute([$businessId, $days]);
+        $failureReasons = $failStmt->fetchAll();
+
+        $campStmt = $this->db->prepare("SELECT
+                c.id, c.name, c.status, c.launched_at, c.completed_at, c.created_at,
+                c.recipient_count, c.delivered_count, c.read_count, c.failed_count,
+                t.name as template_name, t.category as template_category
+            FROM campaigns c
+            LEFT JOIN message_templates t ON t.id = c.template_id
+            WHERE c.business_id = ? AND c.created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)
+            ORDER BY c.created_at DESC
+            LIMIT 50");
+        $campStmt->execute([$businessId, $days]);
+        $campaigns = array_map(static function (array $c) {
+            $rec = (int) $c['recipient_count'];
+            $del = (int) $c['delivered_count'];
+            $read = (int) $c['read_count'];
+            return [
+                'id' => $c['id'],
+                'name' => $c['name'],
+                'templateName' => $c['template_name'] ?? '—',
+                'templateCategory' => $c['template_category'] ?? 'marketing',
+                'status' => $c['status'],
+                'recipientCount' => $rec,
+                'deliveredCount' => $del,
+                'readCount' => $read,
+                'failedCount' => (int) $c['failed_count'],
+                'deliveryRate' => $rec > 0 ? round(($del / $rec) * 100, 1) : 0.0,
+                'readRate' => $del > 0 ? round(($read / $del) * 100, 1) : 0.0,
+                'launchedAt' => $c['launched_at'],
+                'completedAt' => $c['completed_at'] ?? $c['created_at'],
+            ];
+        }, $campStmt->fetchAll());
+
+        $contactsCountStmt = $this->db->prepare('SELECT COUNT(*) FROM contacts WHERE business_id = ? AND consent_status = "opted_in" AND deleted_at IS NULL');
+        $contactsCountStmt->execute([$businessId]);
+        $optedInContacts = (int) $contactsCountStmt->fetchColumn();
+
+        return [
+            'timeframeDays' => $days,
+            'summary' => [
+                'totalAttempts' => $totalAttempts,
+                'sentCount' => $sentCount,
+                'deliveredCount' => $deliveredCount,
+                'readCount' => $readCount,
+                'failedCount' => $failedCount,
+                'deliveryRate' => $deliveryRate,
+                'readRate' => $readRate,
+                'failureRate' => $failureRate,
+                'optedInContacts' => $optedInContacts,
+            ],
+            'daily' => $dailyRows,
+            'failureReasons' => $failureReasons,
+            'campaigns' => $campaigns,
+        ];
+    }
+
     private function cleanText(mixed $value, int $length): ?string
     {
         $text = trim((string) $value); return $text === '' ? null : mb_substr($text, 0, $length);

@@ -34,6 +34,12 @@ $router->add('PATCH', '/api/v1/campaigns/{id}', [$operationsController, 'updateC
 $router->add('DELETE', '/api/v1/campaigns/{id}', [$operationsController, 'deleteCampaign'], [$authenticate, $scope('business'), $permission('campaigns.create')]);
 $router->add('POST', '/api/v1/campaigns/{id}/launch', [$operationsController, 'launchCampaign'], [$authenticate, $scope('business'), $permission('campaigns.send')]);
 $router->add('GET', '/api/v1/campaigns/{id}/recipients', [$operationsController, 'campaignRecipients'], [$authenticate, $scope('business'), $permission('campaigns.view')]);
+$router->add('GET', '/api/v1/reports', [$operationsController, 'reports'], [$authenticate, $scope('business'), $permission('reports.view')]);
+$router->add('GET', '/api/v1/settings', [$operationsController, 'settings'], [$authenticate, $scope('business'), $permission('settings.manage')]);
+$router->add('PATCH', '/api/v1/settings', [$operationsController, 'updateSettings'], [$authenticate, $scope('business'), $permission('settings.manage')]);
+$router->add('POST', '/api/v1/settings/team/invite', [$operationsController, 'inviteTeamMember'], [$authenticate, $scope('business'), $permission('settings.manage')]);
+$router->add('DELETE', '/api/v1/settings/team/{id}', [$operationsController, 'removeTeamMember'], [$authenticate, $scope('business'), $permission('settings.manage')]);
+$router->add('POST', '/api/v1/settings/security/change-password', [$operationsController, 'changePassword'], [$authenticate, $scope('business')]);
 $router->add('GET', '/api/v1/inbox/conversations', [$inboxController, 'conversations'], [$authenticate, $scope('business'), $permission('inbox.view')]);
 $router->add('GET', '/api/v1/inbox/conversations/{id}', [$inboxController, 'conversation'], [$authenticate, $scope('business'), $permission('inbox.view')]);
 $router->add('GET', '/api/v1/inbox/conversations/{id}/messages', [$inboxController, 'messages'], [$authenticate, $scope('business'), $permission('inbox.view')]);

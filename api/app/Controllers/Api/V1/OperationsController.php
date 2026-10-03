@@ -33,4 +33,10 @@ final class OperationsController
     public function deleteCampaign(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->deleteCampaign($identity['business']['id'], $identity['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
     public function launchCampaign(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->launchCampaign($identity['business']['id'], $identity['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
     public function campaignRecipients(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->campaignRecipients($identity['business']['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
+    public function settings(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->settings($identity['business']['id'], $identity['id'])]; }
+    public function updateSettings(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->updateSettings($identity['business']['id'], $identity['id'], $request->json())]; }
+    public function inviteTeamMember(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->inviteTeamMember($identity['business']['id'], $identity['id'], $request->json())]; }
+    public function removeTeamMember(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->removeTeamMember($identity['business']['id'], $identity['id'], (string) ($request->attributes['route']['id'] ?? ''))]; }
+    public function changePassword(Request $request): array { $identity = $request->attributes['identity']; return ['data' => $this->operations->changePassword($identity['id'], $request->json())]; }
+    public function reports(Request $request): array { return ['data' => $this->operations->reports($request->attributes['identity']['business']['id'], $request->query)]; }
 }

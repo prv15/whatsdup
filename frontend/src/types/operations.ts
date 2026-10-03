@@ -53,3 +53,79 @@ export interface ConversationMessage {
   readAt: string | null;
   createdAt: string;
 }
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  email: string;
+  status: string;
+  isPrimary: boolean;
+  role: string;
+  joinedAt: string;
+}
+
+export interface WorkspaceSettings {
+  business: {
+    id: string;
+    name: string;
+    legalName: string | null;
+    slug: string;
+    timezone: string;
+    language: string;
+    defaultCountryCode: string;
+    status: string;
+    createdAt: string;
+  };
+  team: TeamMember[];
+  quota: QuotaOverview;
+}
+
+export interface ReportSummary {
+  totalAttempts: number;
+  sentCount: number;
+  deliveredCount: number;
+  readCount: number;
+  failedCount: number;
+  deliveryRate: number;
+  readRate: number;
+  failureRate: number;
+  optedInContacts: number;
+}
+
+export interface DailyReportItem {
+  date: string;
+  sent: number;
+  delivered: number;
+  read_count: number;
+  failed: number;
+}
+
+export interface FailureReasonItem {
+  code: string;
+  message: string;
+  count: number;
+}
+
+export interface CampaignReportItem {
+  id: string;
+  name: string;
+  templateName: string;
+  templateCategory: string;
+  status: string;
+  recipientCount: number;
+  deliveredCount: number;
+  readCount: number;
+  failedCount: number;
+  deliveryRate: number;
+  readRate: number;
+  launchedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface WorkspaceReports {
+  timeframeDays: number;
+  summary: ReportSummary;
+  daily: DailyReportItem[];
+  failureReasons: FailureReasonItem[];
+  campaigns: CampaignReportItem[];
+}
