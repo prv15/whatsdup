@@ -150,6 +150,7 @@ final class MetaWebhookService
             $status = match (strtoupper($tmpl['event'])) {
                 'APPROVED' => 'approved',
                 'REJECTED' => 'rejected',
+                'PENDING', 'IN_APPEAL' => 'pending',
                 default => null,
             };
             if ($status !== null) {

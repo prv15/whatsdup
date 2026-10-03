@@ -133,8 +133,13 @@ final class MetaConnectionService
         if (!$existing) {
             throw new HttpException(404, 'No Meta connection exists for this business.', 'meta_connection_not_found');
         }
-        if ((string) $existing['meta_waba_id'] !== $wabaId || (string) $existing['meta_phone_number_id'] !== $phoneId) {
-            throw new HttpException(422, 'Select the same WhatsApp account and phone number currently connected to this workspace.', 'meta_reconnect_asset_mismatch');
+        $assetsChanged = ((string) $existing['meta_waba_id'] !== $wabaId) || ((string) $existing['meta_phone_number_id'] !== $phoneId);
+        if ($assetsChanged) {
+            $active = $this->db->prepare("SELECT id FROM campaigns WHERE business_id = ? AND status IN ('queued','scheduled','processing','paused') LIMIT 1 FOR UPDATE");
+            $active->execute([$businessId]);
+            if ($active->fetch()) {
+                throw new HttpException(409, 'Finish or cancel active campaigns before switching WhatsApp accounts.', 'meta_campaigns_active');
+            }
         }
         $exchange = $this->graph->exchangeCode($code);
         $token = (string) ($exchange['access_token'] ?? '');
@@ -149,8 +154,11 @@ final class MetaConnectionService
         try {
             $this->db->prepare('UPDATE encrypted_tokens SET ciphertext = ?, nonce = ?, key_version = ?, metadata = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ?')->execute([$encrypted['ciphertext'], $encrypted['nonce'], $encrypted['keyVersion'], json_encode(['token_type' => $exchange['token_type'] ?? 'bearer'], JSON_THROW_ON_ERROR), $existing['token_id'], $businessId]);
             $this->db->prepare("UPDATE meta_connections SET meta_business_id = ?, app_id = ?, status = 'connecting', connected_by = ?, connected_at = UTC_TIMESTAMP(), last_synced_at = UTC_TIMESTAMP(), last_error_code = NULL, last_error_message = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([(string) ($waba['owner_business_info']['id'] ?? '') ?: null, Env::get('META_APP_ID'), $userId, $existing['id']]);
-            $this->db->prepare('UPDATE waba_accounts SET name = ?, currency = ?, timezone_id = ?, review_status = ?, status = ?, last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$waba['name'] ?? null, $waba['currency'] ?? null, isset($waba['timezone_id']) ? (string) $waba['timezone_id'] : null, $waba['account_review_status'] ?? null, 'active', $existing['waba_local_id']]);
-            $this->db->prepare("UPDATE whatsapp_phone_numbers SET display_phone_number = ?, verified_name = ?, quality_rating = ?, name_status = ?, connection_status = 'connected', last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$phone['display_phone_number'] ?? null, $phone['verified_name'] ?? null, $phone['quality_rating'] ?? null, $phone['name_status'] ?? null, $existing['phone_local_id']]);
+            $this->db->prepare('UPDATE waba_accounts SET meta_waba_id = ?, name = ?, currency = ?, timezone_id = ?, review_status = ?, status = ?, last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$wabaId, $waba['name'] ?? null, $waba['currency'] ?? null, isset($waba['timezone_id']) ? (string) $waba['timezone_id'] : null, $waba['account_review_status'] ?? null, 'active', $existing['waba_local_id']]);
+            $this->db->prepare("UPDATE whatsapp_phone_numbers SET meta_phone_number_id = ?, display_phone_number = ?, verified_name = ?, quality_rating = ?, name_status = ?, connection_status = 'connected', last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$phoneId, $phone['display_phone_number'] ?? null, $phone['verified_name'] ?? null, $phone['quality_rating'] ?? null, $phone['name_status'] ?? null, $existing['phone_local_id']]);
+            if ((string) $existing['meta_waba_id'] !== $wabaId) {
+                $this->db->prepare("UPDATE message_templates SET status = 'draft', meta_template_id = NULL, updated_at = UTC_TIMESTAMP() WHERE business_id = ?")->execute([$businessId]);
+            }
             $this->db->commit();
         } catch (Throwable $exception) {
             $this->db->rollBack();
@@ -278,7 +286,7 @@ final class MetaConnectionService
         try {
             foreach ($templates as $template) {
                 if (!is_array($template) || !isset($template['name'], $template['language'])) continue;
-                $status = match (strtoupper((string) ($template['status'] ?? ''))) { 'APPROVED' => 'approved', 'REJECTED' => 'rejected', default => 'draft' };
+                $status = match (strtoupper((string) ($template['status'] ?? ''))) { 'APPROVED' => 'approved', 'REJECTED' => 'rejected', 'PENDING', 'IN_APPEAL' => 'pending', default => 'draft' };
                 $category = strtolower((string) ($template['category'] ?? 'marketing'));
                 if (!in_array($category, ['marketing', 'utility', 'authentication'], true)) $category = 'marketing';
                 $body = ''; $headerType = 'none';
@@ -300,5 +308,37 @@ final class MetaConnectionService
             $this->db->commit();
         } catch (Throwable $exception) { $this->db->rollBack(); throw $exception; }
         return ['synced' => $synced];
+    }
+
+    public function disconnect(string $businessId, string $userId): array
+    {
+        $statement = $this->db->prepare('SELECT id, token_id FROM meta_connections WHERE business_id = ? AND deleted_at IS NULL LIMIT 1');
+        $statement->execute([$businessId]);
+        $row = $statement->fetch();
+        if (!$row) {
+            return $this->status($businessId);
+        }
+
+        $active = $this->db->prepare("SELECT id FROM campaigns WHERE business_id = ? AND status IN ('queued','scheduled','processing','paused') LIMIT 1 FOR UPDATE");
+        $active->execute([$businessId]);
+        if ($active->fetch()) {
+            throw new HttpException(409, 'Finish or cancel queued, scheduled, processing and paused campaigns before disconnecting your Meta account.', 'meta_campaigns_active');
+        }
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare("UPDATE meta_connections SET status = 'disconnected', deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ?")->execute([$row['id']]);
+            $this->db->prepare("UPDATE whatsapp_phone_numbers SET deleted_at = UTC_TIMESTAMP(), connection_status = 'disconnected', updated_at = UTC_TIMESTAMP() WHERE business_id = ? AND deleted_at IS NULL")->execute([$businessId]);
+            $this->db->prepare("UPDATE webhook_subscriptions SET status = 'disconnected', updated_at = UTC_TIMESTAMP() WHERE business_id = ?")->execute([$businessId]);
+            $this->db->prepare("UPDATE message_templates SET status = 'draft', meta_template_id = NULL, updated_at = UTC_TIMESTAMP() WHERE business_id = ?")->execute([$businessId]);
+
+            $this->audit->record($businessId, $userId, 'meta.connection.disconnected', 'meta_connection', (string) $row['id']);
+            $this->db->commit();
+        } catch (Throwable $exception) {
+            $this->db->rollBack();
+            throw $exception;
+        }
+
+        return $this->status($businessId);
     }
 }

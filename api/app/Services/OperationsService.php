@@ -6,6 +6,7 @@ namespace WhatstheUp\Services;
 
 use PDO;
 use Throwable;
+use WhatstheUp\Security\TokenCipher;
 use WhatstheUp\Support\Env;
 use WhatstheUp\Support\HttpException;
 use WhatstheUp\Support\Uuid;
@@ -16,6 +17,8 @@ final class OperationsService
         private readonly PDO $db,
         private readonly AuditService $audit,
         private readonly ?QuotaService $quota = null,
+        private readonly ?MetaGraphClient $graph = null,
+        private readonly ?TokenCipher $cipher = null,
     )
     {
     }
@@ -246,11 +249,107 @@ final class OperationsService
 
     public function deleteTemplate(string $businessId, string $userId, string $id): array
     {
-        $statement = $this->db->prepare("UPDATE message_templates SET deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ? AND status = 'draft' AND deleted_at IS NULL");
+        $statement = $this->db->prepare("SELECT id, name, meta_template_id, status FROM message_templates WHERE id = ? AND business_id = ? AND deleted_at IS NULL");
         $statement->execute([$id, $businessId]);
-        if ($statement->rowCount() === 0) throw new HttpException(422, 'Only local template drafts can be deleted.', 'template_not_deletable');
+        $tmpl = $statement->fetch();
+        if (!$tmpl) {
+            throw new HttpException(404, 'Template not found.', 'not_found');
+        }
+
+        if (!empty($tmpl['meta_template_id'])) {
+            try {
+                $connection = $this->db->prepare("SELECT et.ciphertext, et.nonce, wa.meta_waba_id 
+                    FROM meta_connections mc 
+                    JOIN encrypted_tokens et ON et.id = mc.token_id 
+                    JOIN waba_accounts wa ON wa.meta_connection_id = mc.id 
+                    WHERE mc.business_id = ? AND mc.status = 'connected' AND mc.deleted_at IS NULL LIMIT 1");
+                $connection->execute([$businessId]);
+                $row = $connection->fetch();
+                if ($row) {
+                    $cipher = $this->cipher ?? new TokenCipher();
+                    $graph = $this->graph ?? new MetaGraphClient();
+                    $token = $cipher->decrypt((string) $row['ciphertext'], (string) $row['nonce']);
+                    $graph->deleteTemplate((string) $row['meta_waba_id'], $token, (string) $tmpl['name']);
+                }
+            } catch (Throwable) {
+                // Ignore Meta remote deletion failures if Meta already removed it
+            }
+        }
+
+        $this->db->prepare("UPDATE message_templates SET deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ?")
+            ->execute([$id, $businessId]);
+
         $this->audit->record($businessId, $userId, 'template.deleted', 'message_template', $id);
         return ['id' => $id, 'deleted' => true];
+    }
+
+    public function submitTemplate(string $businessId, string $userId, string $id): array
+    {
+        $template = $this->templateById($businessId, $id);
+        if ($template['status'] === 'approved') {
+            throw new HttpException(422, 'This template has already been approved by Meta.', 'template_already_approved');
+        }
+        if ($template['status'] === 'pending') {
+            throw new HttpException(422, 'This template is already submitted to Meta and is pending approval.', 'template_pending_approval');
+        }
+
+        $connection = $this->db->prepare("SELECT et.ciphertext, et.nonce, wa.meta_waba_id 
+            FROM meta_connections mc 
+            JOIN encrypted_tokens et ON et.id = mc.token_id 
+            JOIN waba_accounts wa ON wa.meta_connection_id = mc.id 
+            WHERE mc.business_id = ? AND mc.status = 'connected' AND mc.deleted_at IS NULL LIMIT 1");
+        $connection->execute([$businessId]);
+        $row = $connection->fetch();
+        if (!$row) {
+            throw new HttpException(422, 'Connect an active Meta WhatsApp account before submitting templates to Meta.', 'meta_not_connected');
+        }
+
+        $cipher = $this->cipher ?? new TokenCipher();
+        $graph = $this->graph ?? new MetaGraphClient();
+        $token = $cipher->decrypt((string) $row['ciphertext'], (string) $row['nonce']);
+        $wabaId = (string) $row['meta_waba_id'];
+
+        $components = [];
+        $bodyComponent = [
+            'type' => 'BODY',
+            'text' => $template['body'],
+        ];
+
+        if (!empty($template['variables'])) {
+            $sampleValues = [];
+            foreach ($template['variables'] as $varKey) {
+                $sampleValues[] = 'Sample' . $varKey;
+            }
+            $bodyComponent['example'] = [
+                'body_text' => [$sampleValues],
+            ];
+        }
+        $components[] = $bodyComponent;
+
+        $payload = [
+            'name' => $template['name'],
+            'category' => strtoupper($template['category']),
+            'language' => $template['language'],
+            'components' => $components,
+        ];
+
+        $metaResponse = $graph->createTemplate($wabaId, $token, $payload);
+        $metaTemplateId = (string) ($metaResponse['id'] ?? '');
+        $metaStatus = match (strtoupper((string) ($metaResponse['status'] ?? ''))) {
+            'APPROVED' => 'approved',
+            'REJECTED' => 'rejected',
+            default => 'pending',
+        };
+
+        $this->db->prepare("UPDATE message_templates SET meta_template_id = ?, status = ?, rejection_reason = NULL, updated_at = UTC_TIMESTAMP() WHERE id = ? AND business_id = ?")
+            ->execute([$metaTemplateId ?: null, $metaStatus, $id, $businessId]);
+
+        $this->audit->record($businessId, $userId, 'template.submitted_to_meta', 'message_template', $id, [
+            'meta_template_id' => $metaTemplateId,
+            'status' => $metaStatus,
+        ]);
+
+        return $this->templateById($businessId, $id);
     }
 
     public function campaigns(string $businessId): array

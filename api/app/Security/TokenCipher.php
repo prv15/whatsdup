@@ -6,7 +6,7 @@ namespace WhatstheUp\Security;
 
 use WhatstheUp\Support\Env;
 
-final class TokenCipher
+class TokenCipher
 {
     public function encrypt(string $plaintext): array
     {

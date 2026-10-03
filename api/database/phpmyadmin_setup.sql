@@ -348,7 +348,7 @@ CREATE TABLE IF NOT EXISTS `message_templates` (
   `header_media_url` varchar(500) DEFAULT NULL,
   `body` text NOT NULL,
   `variables` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`variables`)),
-  `status` enum('draft','approved','rejected') NOT NULL DEFAULT 'draft',
+  `status` enum('draft','pending','approved','rejected') NOT NULL DEFAULT 'draft',
   `rejection_reason` varchar(500) DEFAULT NULL,
   `created_by` char(36) NOT NULL,
   `created_at` datetime NOT NULL,

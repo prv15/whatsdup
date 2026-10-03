@@ -7,7 +7,7 @@ namespace WhatstheUp\Services;
 use WhatstheUp\Support\Env;
 use WhatstheUp\Support\HttpException;
 
-final class MetaGraphClient
+class MetaGraphClient
 {
     public function exchangeCode(string $code): array
     {
@@ -44,6 +44,16 @@ final class MetaGraphClient
     public function getTemplates(string $wabaId, string $token): array
     {
         return $this->request('GET', '/' . rawurlencode($wabaId) . '/message_templates', $token, ['fields' => 'id,name,status,language,category,components', 'limit' => '250']);
+    }
+
+    public function createTemplate(string $wabaId, string $token, array $payload): array
+    {
+        return $this->request('POST', '/' . rawurlencode($wabaId) . '/message_templates', $token, [], $payload);
+    }
+
+    public function deleteTemplate(string $wabaId, string $token, string $templateName): array
+    {
+        return $this->request('DELETE', '/' . rawurlencode($wabaId) . '/message_templates', $token, ['name' => $templateName]);
     }
 
     public function getWabaPhones(string $wabaId, string $token): array

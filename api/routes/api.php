@@ -27,6 +27,7 @@ $router->add('GET', '/api/v1/templates', [$operationsController, 'templates'], [
 $router->add('POST', '/api/v1/templates', [$operationsController, 'createTemplate'], [$authenticate, $scope('business'), $permission('templates.create')]);
 $router->add('PUT', '/api/v1/templates/{id}', [$operationsController, 'updateTemplate'], [$authenticate, $scope('business'), $permission('templates.create')]);
 $router->add('DELETE', '/api/v1/templates/{id}', [$operationsController, 'deleteTemplate'], [$authenticate, $scope('business'), $permission('templates.create')]);
+$router->add('POST', '/api/v1/templates/{id}/submit', [$operationsController, 'submitTemplate'], [$authenticate, $scope('business'), $permission('templates.create')]);
 $router->add('GET', '/api/v1/campaigns', [$operationsController, 'campaigns'], [$authenticate, $scope('business'), $permission('campaigns.view')]);
 $router->add('POST', '/api/v1/campaigns', [$operationsController, 'createCampaign'], [$authenticate, $scope('business'), $permission('campaigns.create')]);
 $router->add('PATCH', '/api/v1/campaigns/{id}', [$operationsController, 'updateCampaign'], [$authenticate, $scope('business'), $permission('campaigns.create')]);

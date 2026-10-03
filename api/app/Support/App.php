@@ -46,7 +46,7 @@ final class App
         $metaController = new MetaConnectionController(new MetaConnectionService($db, $metaGraphClient, $tokenCipher, $audit));
         $metaWebhookController = new MetaWebhookController(new MetaWebhookService($db), $db);
         $quota = new QuotaService($db);
-        $operationsController = new OperationsController(new OperationsService($db, $audit, $quota));
+        $operationsController = new OperationsController(new OperationsService($db, $audit, $quota, $metaGraphClient, $tokenCipher));
         $inboxController = new InboxController(new InboxService($db, $metaGraphClient, $tokenCipher, $audit));
         $authenticate = new Authenticate($auth);
         $permission = static fn (string $name) => new RequirePermission($name);
