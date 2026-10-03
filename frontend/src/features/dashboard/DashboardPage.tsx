@@ -1,10 +1,32 @@
-import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, CalendarClock, CheckCircle2, Circle, ExternalLink, FileCheck2, Gauge, MessageSquareText, ShieldAlert, Sparkles, Users, Zap } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ArrowRight,
+  CalendarClock,
+  CheckCircle2,
+  Circle,
+  ExternalLink,
+  FileCheck2,
+  Gauge,
+  MessageSquareText,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Users,
+  Zap,
+} from 'lucide-react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../../services/api';
 import type { WorkspaceDashboard } from '../../types/operations';
 
 export function DashboardPage() {
+  const queryClient = useQueryClient();
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [initiating, setInitiating] = useState(false);
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'info' | 'error'; message: string } | null>(null);
+  const [localInitiated, setLocalInitiated] = useState(false);
+
   const dashboard = useQuery({
     queryKey: ['dashboard'],
     queryFn: async () => (await api.get<{ data: WorkspaceDashboard }>('/dashboard')).data.data,
@@ -17,7 +39,8 @@ export function DashboardPage() {
 
   const data = dashboard.data;
   const quota = data?.quota;
-  const metaBusinessId = metaStatus.data?.metaBusinessId;
+  const metaBusinessId = data?.metaBusinessId || metaStatus.data?.metaBusinessId;
+  const isMetaConnected = data?.metaStatus === 'connected';
 
   const cards = [
     ['Messages today', data?.metrics.messagesToday ?? 0, MessageSquareText],
@@ -26,27 +49,26 @@ export function DashboardPage() {
     ['Scheduled', data?.metrics.scheduledCampaigns ?? 0, CalendarClock],
   ] as const;
 
-  const complete = [data?.metaStatus === 'connected', (data?.metrics.contacts ?? 0) > 0, (data?.metrics.approvedTemplates ?? 0) > 0];
+  const complete = [isMetaConnected, (data?.metrics.contacts ?? 0) > 0, (data?.metrics.approvedTemplates ?? 0) > 0];
   const progress = Math.round((complete.filter(Boolean).length / complete.length) * 100);
 
-  const next =
-    data?.metaStatus === 'connected'
-      ? data?.metrics.contacts
-        ? {
-            to: '/templates',
-            title: 'Choose an approved template',
-            copy: 'Create or sync an approved Meta template before you launch your first campaign.',
-          }
-        : {
-            to: '/contacts',
-            title: 'Import your opted-in contacts',
-            copy: 'Upload a simple CSV to prepare an eligible campaign audience.',
-          }
+  const next = isMetaConnected
+    ? data?.metrics.contacts
+      ? {
+          to: '/templates',
+          title: 'Choose an approved template',
+          copy: 'Create or sync an approved Meta template before you launch your first campaign.',
+        }
       : {
-          to: '/meta',
-          title: 'Connect WhatsApp',
-          copy: 'Use Meta’s official Embedded Signup to link your business portfolio, WABA and phone number.',
-        };
+          to: '/contacts',
+          title: 'Import your opted-in contacts',
+          copy: 'Upload a simple CSV to prepare an eligible campaign audience.',
+        }
+    : {
+        to: '/meta',
+        title: 'Connect WhatsApp',
+        copy: 'Use Meta’s official Embedded Signup to link your business portfolio, WABA and phone number.',
+      };
 
   const recipientLimit = quota?.monthlyRecipients?.limit ?? null;
   const recipientUsed = quota?.monthlyRecipients?.used ?? 0;
@@ -57,6 +79,105 @@ export function DashboardPage() {
   const contactsUsed = quota?.contacts?.used ?? 0;
   const contactsPercentage = quota?.contacts?.percentage ?? 0;
 
+  // Verification & Tier logic
+  const isVerified =
+    data?.businessVerificationStatus === 'verified' ||
+    ['TIER_1K', 'TIER_10K', 'TIER_100K', 'TIER_UNLIMITED'].includes(data?.messagingLimitTier ?? '');
+
+  const isInitiated =
+    isVerified ||
+    localInitiated ||
+    Boolean(data?.verificationInitiatedAt) ||
+    data?.businessVerificationStatus === 'pending';
+
+  const formatTierDisplay = (tier?: string | null) => {
+    switch (tier) {
+      case 'TIER_1K':
+        return '1,000 conversations / 24h';
+      case 'TIER_10K':
+        return '10,000 conversations / 24h';
+      case 'TIER_100K':
+        return '100,000 conversations / 24h';
+      case 'TIER_UNLIMITED':
+        return 'Unlimited conversations / 24h';
+      case 'TIER_250':
+      default:
+        return '250 conversations / 24h';
+    }
+  };
+
+  const handleVerifyOnMeta = async () => {
+    try {
+      setInitiating(true);
+      setActionNotice(null);
+      await api.post('/meta/verification/initiate');
+      setLocalInitiated(true);
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      await queryClient.invalidateQueries({ queryKey: ['meta-status'] });
+
+      const targetUrl = metaBusinessId
+        ? `https://business.facebook.com/settings/security?business_id=${encodeURIComponent(metaBusinessId)}`
+        : 'https://business.facebook.com/settings/security';
+
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+
+      setActionNotice({
+        type: 'info',
+        message:
+          'Meta Security Center opened in a new tab. Submit your business documents on Meta, then click "Check Verification Status" below to refresh your limits.',
+      });
+    } catch {
+      const targetUrl = metaBusinessId
+        ? `https://business.facebook.com/settings/security?business_id=${encodeURIComponent(metaBusinessId)}`
+        : 'https://business.facebook.com/settings/security';
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      setLocalInitiated(true);
+    } finally {
+      setInitiating(false);
+    }
+  };
+
+  const handleCheckStatus = async () => {
+    try {
+      setCheckingStatus(true);
+      setActionNotice(null);
+      const res = await api.post<{
+        data: { businessVerificationStatus?: string; tier?: string; messagingLimitTier?: string };
+      }>('/meta/sync-status');
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      await queryClient.invalidateQueries({ queryKey: ['meta-status'] });
+
+      const newTier = res.data.data.tier || res.data.data.messagingLimitTier;
+      const newStatus = res.data.data.businessVerificationStatus;
+      const verifiedNow =
+        newStatus === 'verified' || ['TIER_1K', 'TIER_10K', 'TIER_100K', 'TIER_UNLIMITED'].includes(newTier ?? '');
+
+      if (verifiedNow) {
+        setActionNotice({
+          type: 'success',
+          message:
+            'Congratulations! Your Meta business verification is approved. Daily throughput upgraded to 1,000+ conversations/24h.',
+        });
+      } else {
+        setActionNotice({
+          type: 'info',
+          message:
+            'Verification is still under review or pending document approval on Meta. Please check back after Meta reviews your documents.',
+        });
+      }
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error?.message ??
+        'Could not check verification status. Please try again.';
+      setActionNotice({
+        type: 'error',
+        message: msg,
+      });
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div>
@@ -64,6 +185,37 @@ export function DashboardPage() {
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">Your growth workspace</h1>
         <p className="mt-2 text-muted">Manage your official WhatsApp campaigns, monitor monthly quotas, and scale your audience.</p>
       </div>
+
+      {/* Action Feedback Notice */}
+      {actionNotice && (
+        <div
+          className={`flex items-start justify-between gap-3 rounded-2xl border p-4 text-sm ${
+            actionNotice.type === 'success'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+              : actionNotice.type === 'error'
+              ? 'border-red-200 bg-red-50 text-red-800'
+              : 'border-blue-200 bg-blue-50 text-blue-800'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {actionNotice.type === 'success' ? (
+              <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
+            ) : actionNotice.type === 'error' ? (
+              <ShieldAlert size={18} className="shrink-0 text-red-600" />
+            ) : (
+              <Sparkles size={18} className="shrink-0 text-blue-600" />
+            )}
+            <span>{actionNotice.message}</span>
+          </div>
+          <button
+            onClick={() => setActionNotice(null)}
+            className="ml-auto text-muted hover:text-ink font-semibold"
+            aria-label="Dismiss notice"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Top 4 KPI Metrics */}
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -164,41 +316,119 @@ export function DashboardPage() {
         <article className="rounded-2xl border border-line bg-white p-6 shadow-card flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between">
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
-                <Gauge size={13} /> Meta Daily Throttle
-              </span>
+              {isVerified ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
+                  <CheckCircle2 size={13} /> Verified Business
+                </span>
+              ) : isInitiated ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-800">
+                  <Gauge size={13} /> Verification In Review
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
+                  <Gauge size={13} /> Meta Daily Throttle
+                </span>
+              )}
               <span className="text-xs font-mono font-medium text-muted">24h Rolling</span>
             </div>
 
-            <h3 className="mt-3 text-lg font-semibold text-ink">250 conversations / 24h</h3>
+            <h3 className="mt-3 text-lg font-semibold text-ink">
+              {formatTierDisplay(data?.messagingLimitTier)}
+            </h3>
+
             <p className="mt-1 text-xs text-muted">
-              Unverified Trial Tier. Meta restricts new numbers to 250 business-initiated contacts per 24 hours.
+              {isVerified
+                ? 'Meta Verified Tier. High daily throughput active. Limit scales automatically with good messaging quality.'
+                : isInitiated
+                ? 'Verification submitted to Meta. Once approved by Meta, your limit expands to 1,000+ conversations/24h.'
+                : 'Unverified Trial Tier. Meta restricts new numbers to 250 business-initiated contacts per 24 hours.'}
             </p>
 
-            <div className="mt-4 rounded-xl bg-amber-50/70 p-3 border border-amber-200/50">
-              <div className="flex items-start gap-2">
-                <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-700" />
-                <div className="text-xs text-amber-800 leading-5">
-                  <strong>Scale to 1,000+ msgs/day:</strong> Verify your business legal documents (GST/Incorporation) in Meta Security Center.
+            {isVerified ? (
+              <div className="mt-4 rounded-xl bg-emerald-50/70 p-3 border border-emerald-200/50">
+                <div className="flex items-start gap-2">
+                  <ShieldCheck size={16} className="mt-0.5 shrink-0 text-emerald-700" />
+                  <div className="text-xs text-emerald-800 leading-5">
+                    <strong>Official Meta Verification Active:</strong> Business identity confirmed. Scale higher by maintaining high template quality ratings.
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : isInitiated ? (
+              <div className="mt-4 rounded-xl bg-blue-50/70 p-3 border border-blue-200/50">
+                <div className="flex items-start gap-2">
+                  <Sparkles size={16} className="mt-0.5 shrink-0 text-blue-700" />
+                  <div className="text-xs text-blue-800 leading-5">
+                    <strong>Under Meta Review:</strong> Meta typically verifies documents within 1-3 business days. Once approved on Meta, click below to sync.
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl bg-amber-50/70 p-3 border border-amber-200/50">
+                <div className="flex items-start gap-2">
+                  <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-700" />
+                  <div className="text-xs text-amber-800 leading-5">
+                    <strong>Scale to 1,000+ msgs/day:</strong> Verify your business legal documents (GST/Incorporation) in Meta Security Center.
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="mt-5">
-            <a
-              href={
-                metaBusinessId
-                  ? `https://business.facebook.com/settings/security?business_id=${metaBusinessId}`
-                  : 'https://business.facebook.com/settings/security'
-              }
-              target="_blank"
-              rel="noreferrer"
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-slate-800"
-            >
-              Verify Business on Meta <ExternalLink size={13} />
-            </a>
-          </div>
+          {!isMetaConnected ? (
+            <div className="mt-5">
+              <Link
+                to="/meta"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-slate-800"
+              >
+                Connect WhatsApp First <ArrowRight size={13} />
+              </Link>
+            </div>
+          ) : isVerified ? (
+            <div className="mt-5 space-y-2">
+              <button
+                onClick={handleCheckStatus}
+                disabled={checkingStatus}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-line bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={checkingStatus ? 'animate-spin' : ''} />
+                {checkingStatus ? 'Syncing...' : 'Sync Live Meta Tier'}
+              </button>
+            </div>
+          ) : isInitiated ? (
+            <div className="mt-5 space-y-2">
+              <button
+                onClick={handleCheckStatus}
+                disabled={checkingStatus}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-brand-800 disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={checkingStatus ? 'animate-spin' : ''} />
+                {checkingStatus ? 'Checking with Meta...' : 'Check Verification Status'}
+              </button>
+              <a
+                href={
+                  metaBusinessId
+                    ? `https://business.facebook.com/settings/security?business_id=${encodeURIComponent(metaBusinessId)}`
+                    : 'https://business.facebook.com/settings/security'
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="flex w-full items-center justify-center gap-1 text-center text-xs font-medium text-muted hover:text-ink pt-1"
+              >
+                Open Meta Security Center <ExternalLink size={11} />
+              </a>
+            </div>
+          ) : (
+            <div className="mt-5">
+              <button
+                onClick={handleVerifyOnMeta}
+                disabled={initiating}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
+              >
+                <ShieldAlert size={14} />
+                {initiating ? 'Opening Meta...' : 'Verify on Meta'} <ExternalLink size={13} />
+              </button>
+            </div>
+          )}
         </article>
       </section>
 

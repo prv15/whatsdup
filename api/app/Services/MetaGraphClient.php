@@ -33,7 +33,7 @@ class MetaGraphClient
 
     public function getPhone(string $phoneId, string $token): array
     {
-        return $this->request('GET', '/' . rawurlencode($phoneId), $token, ['fields' => 'id,display_phone_number,verified_name,quality_rating,name_status']);
+        return $this->request('GET', '/' . rawurlencode($phoneId), $token, ['fields' => 'id,display_phone_number,verified_name,quality_rating,name_status,messaging_limit_tier,code_verification_status']);
     }
 
     public function subscribeWaba(string $wabaId, string $token): array

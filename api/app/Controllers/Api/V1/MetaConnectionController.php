@@ -48,6 +48,18 @@ final class MetaConnectionController
         return ['data' => $this->meta->verifyBusinessAccess($identity['business']['id'], $identity['id'])];
     }
 
+    public function initiateVerification(Request $request): array
+    {
+        $identity = $request->attributes['identity'];
+        return ['data' => $this->meta->initiateVerification($identity['business']['id'], $identity['id'])];
+    }
+
+    public function syncStatus(Request $request): array
+    {
+        $identity = $request->attributes['identity'];
+        return ['data' => $this->meta->syncStatus($identity['business']['id'], $identity['id'])];
+    }
+
     public function syncTemplates(Request $request): array
     {
         $identity = $request->attributes['identity'];

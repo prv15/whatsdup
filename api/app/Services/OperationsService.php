@@ -32,11 +32,20 @@ final class OperationsService
             (SELECT COUNT(*) FROM campaign_contacts cc JOIN campaigns c ON c.id = cc.campaign_id WHERE c.business_id = ? AND cc.sent_at >= UTC_DATE()) messages_today");
         $metrics->execute([$businessId, $businessId, $businessId, $businessId]);
         $row = $metrics->fetch() ?: [];
-        $meta = $this->db->prepare('SELECT status FROM meta_connections WHERE business_id = ? AND deleted_at IS NULL LIMIT 1');
+        $meta = $this->db->prepare("SELECT mc.status, mc.meta_business_id, mc.business_verification_status, mc.verification_initiated_at, pn.messaging_limit_tier
+            FROM meta_connections mc
+            LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+            LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL
+            WHERE mc.business_id = ? AND mc.deleted_at IS NULL LIMIT 1");
         $meta->execute([$businessId]);
+        $metaRow = $meta->fetch() ?: [];
         return [
             'metrics' => ['messagesToday' => (int) ($row['messages_today'] ?? 0), 'contacts' => (int) ($row['contacts'] ?? 0), 'approvedTemplates' => (int) ($row['approved_templates'] ?? 0), 'scheduledCampaigns' => (int) ($row['scheduled_campaigns'] ?? 0)],
-            'metaStatus' => $meta->fetchColumn() ?: 'not_connected',
+            'metaStatus' => $metaRow['status'] ?? 'not_connected',
+            'metaBusinessId' => $metaRow['meta_business_id'] ?? null,
+            'businessVerificationStatus' => $metaRow['business_verification_status'] ?? 'unverified',
+            'verificationInitiatedAt' => $metaRow['verification_initiated_at'] ?? null,
+            'messagingLimitTier' => $metaRow['messaging_limit_tier'] ?? 'TIER_250',
             'quota' => ($this->quota ?? new QuotaService($this->db))->getUsageOverview($businessId),
         ];
     }

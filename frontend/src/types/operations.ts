@@ -15,6 +15,10 @@ export interface QuotaOverview {
 export interface WorkspaceDashboard {
   metrics: { messagesToday: number; contacts: number; approvedTemplates: number; scheduledCampaigns: number };
   metaStatus: string;
+  metaBusinessId?: string | null;
+  businessVerificationStatus?: 'unverified' | 'pending' | 'verified' | 'failed';
+  verificationInitiatedAt?: string | null;
+  messagingLimitTier?: string | null;
   quota?: QuotaOverview;
 }
 export interface ConversationSummary {

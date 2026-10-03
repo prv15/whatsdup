@@ -30,9 +30,9 @@ final class MetaConnectionService
 
     public function status(string $businessId): array
     {
-        $statement = $this->db->prepare("SELECT mc.id, mc.status, mc.meta_business_id, mc.connected_at, mc.last_synced_at, mc.last_tested_at, mc.last_error_code, mc.last_error_message,
+        $statement = $this->db->prepare("SELECT mc.id, mc.status, mc.meta_business_id, mc.business_verification_status, mc.verification_initiated_at, mc.connected_at, mc.last_synced_at, mc.last_tested_at, mc.last_error_code, mc.last_error_message,
                 wa.meta_waba_id, wa.name waba_name, wa.currency, wa.review_status,
-                pn.meta_phone_number_id, pn.display_phone_number, pn.verified_name, pn.quality_rating, pn.name_status, pn.registration_status, pn.is_default,
+                pn.meta_phone_number_id, pn.display_phone_number, pn.verified_name, pn.quality_rating, pn.name_status, pn.registration_status, pn.is_default, pn.messaging_limit_tier,
                 ws.status webhook_status
             FROM meta_connections mc
             LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
@@ -45,7 +45,7 @@ final class MetaConnectionService
             return ['status' => 'not_connected', 'waba' => null, 'phone' => null, 'webhookStatus' => 'pending', 'connectedAt' => null, 'lastSyncedAt' => null, 'lastTestedAt' => null, 'error' => null];
         }
         return [
-            'status' => $row['status'], 'metaBusinessId' => $row['meta_business_id'], 'connectedAt' => $row['connected_at'], 'lastSyncedAt' => $row['last_synced_at'], 'lastTestedAt' => $row['last_tested_at'],
+            'status' => $row['status'], 'metaBusinessId' => $row['meta_business_id'], 'businessVerificationStatus' => $row['business_verification_status'] ?? 'unverified', 'verificationInitiatedAt' => $row['verification_initiated_at'] ?? null, 'messagingLimitTier' => $row['messaging_limit_tier'] ?? 'TIER_250', 'connectedAt' => $row['connected_at'], 'lastSyncedAt' => $row['last_synced_at'], 'lastTestedAt' => $row['last_tested_at'],
             'waba' => $row['meta_waba_id'] ? ['id' => $row['meta_waba_id'], 'name' => $row['waba_name'], 'currency' => $row['currency'], 'reviewStatus' => $row['review_status']] : null,
             'phone' => $row['meta_phone_number_id'] ? ['id' => $row['meta_phone_number_id'], 'number' => $row['display_phone_number'], 'verifiedName' => $row['verified_name'], 'qualityRating' => $row['quality_rating'], 'nameStatus' => $row['name_status'], 'registrationStatus' => $row['registration_status'], 'isDefault' => (bool) $row['is_default']] : null,
             'webhookStatus' => $row['webhook_status'] ?? 'pending', 'error' => $row['last_error_message'] ? ['code' => $row['last_error_code'], 'message' => $row['last_error_message']] : null,
@@ -244,6 +244,85 @@ final class MetaConnectionService
             $this->db->prepare("UPDATE meta_connections SET status = 'webhook_error', last_error_code = 'meta_test_webhook_failed', last_error_message = 'Test token saved, but webhook subscription failed. Check token access and retry test setup.' WHERE id = ?")->execute([$existing['id']]);
         }
         return $this->status($businessId);
+    }
+
+    public function initiateVerification(string $businessId, string $userId): array
+    {
+        $statement = $this->db->prepare("UPDATE meta_connections 
+            SET verification_initiated_at = COALESCE(verification_initiated_at, UTC_TIMESTAMP()),
+                business_verification_status = IF(business_verification_status = 'verified', 'verified', 'pending'),
+                updated_at = UTC_TIMESTAMP() 
+            WHERE business_id = ? AND deleted_at IS NULL");
+        $statement->execute([$businessId]);
+        $this->audit->record($businessId, $userId, 'meta.verification.initiated', 'meta_connection', $businessId);
+        return $this->status($businessId);
+    }
+
+    public function syncStatus(string $businessId, string $userId): array
+    {
+        $statement = $this->db->prepare("SELECT mc.id, mc.business_verification_status, mc.verification_initiated_at, et.ciphertext, et.nonce, wa.meta_waba_id, pn.id phone_local_id, pn.meta_phone_number_id
+            FROM meta_connections mc
+            JOIN encrypted_tokens et ON et.id = mc.token_id
+            LEFT JOIN waba_accounts wa ON wa.meta_connection_id = mc.id
+            LEFT JOIN whatsapp_phone_numbers pn ON pn.waba_account_id = wa.id AND pn.deleted_at IS NULL
+            WHERE mc.business_id = ? AND mc.status = 'connected' AND mc.deleted_at IS NULL LIMIT 1");
+        $statement->execute([$businessId]);
+        $row = $statement->fetch();
+        if (!$row) {
+            throw new HttpException(422, 'Connect an active Meta WhatsApp account before checking verification status.', 'meta_not_connected');
+        }
+
+        $token = $this->cipher->decrypt((string) $row['ciphertext'], (string) $row['nonce']);
+        $phoneId = (string) ($row['meta_phone_number_id'] ?? '');
+        $phoneData = [];
+        if ($phoneId !== '') {
+            try {
+                $phoneData = $this->graph->getPhone($phoneId, $token);
+            } catch (Throwable) {
+                // Ignore transient Meta rate limit or error
+            }
+        }
+
+        $tier = strtoupper((string) ($phoneData['messaging_limit_tier'] ?? 'TIER_250'));
+        $verifiedName = $phoneData['verified_name'] ?? null;
+        $qualityRating = $phoneData['quality_rating'] ?? null;
+        $nameStatus = $phoneData['name_status'] ?? null;
+
+        $isVerified = in_array($tier, ['TIER_1K', 'TIER_10K', 'TIER_100K', 'TIER_UNLIMITED'], true);
+        $verificationStatus = $isVerified ? 'verified' : ($row['verification_initiated_at'] ? 'pending' : 'unverified');
+
+        $this->db->beginTransaction();
+        try {
+            if (!empty($row['phone_local_id'])) {
+                $this->db->prepare("UPDATE whatsapp_phone_numbers 
+                    SET messaging_limit_tier = ?, verified_name = COALESCE(?, verified_name), quality_rating = COALESCE(?, quality_rating), name_status = COALESCE(?, name_status), last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() 
+                    WHERE id = ?")
+                    ->execute([$tier, $verifiedName, $qualityRating, $nameStatus, $row['phone_local_id']]);
+            }
+
+            $this->db->prepare("UPDATE meta_connections 
+                SET business_verification_status = ?, last_synced_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() 
+                WHERE id = ?")
+                ->execute([$verificationStatus, $row['id']]);
+
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+
+        $this->audit->record($businessId, $userId, 'meta.status.synced', 'meta_connection', (string) $row['id'], [
+            'messaging_limit_tier' => $tier,
+            'business_verification_status' => $verificationStatus,
+        ]);
+
+        return array_merge($this->status($businessId), [
+            'tier' => $tier,
+            'isVerified' => $isVerified,
+            'message' => $isVerified
+                ? 'Congratulations! Your business is officially verified on Meta with higher messaging limits enabled.'
+                : 'Meta is still reviewing your business documents. Reviews typically take 15 mins to 24–48 hours. You can check again anytime.',
+        ]);
     }
 
     public function verifyBusinessAccess(string $businessId, string $userId): array
