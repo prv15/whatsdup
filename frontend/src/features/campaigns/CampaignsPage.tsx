@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Megaphone, Pencil, Plus, Send, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, Megaphone, Pencil, Plus, Send, ShieldAlert, Sparkles, Trash2, Users, X } from 'lucide-react';
 import { useState } from 'react';
 import { api } from '../../services/api';
-import type { Campaign, CampaignRecipient, CampaignVariableMapping, ContactGroup, ContactsResponse, MessageTemplate } from '../../types/operations';
+import type { Campaign, CampaignRecipient, CampaignVariableMapping, ContactGroup, ContactsResponse, MessageTemplate, WorkspaceDashboard } from '../../types/operations';
 import { ConfirmPanel, InlineNotice } from '../../components/feedback/Feedback';
 
 export function CampaignsPage() {
@@ -21,6 +21,12 @@ export function CampaignsPage() {
   const templates = useQuery({ queryKey: ['templates'], queryFn: async () => (await api.get<{ data: MessageTemplate[] }>('/templates')).data.data });
   const contacts = useQuery({ queryKey: ['contacts'], queryFn: async () => (await api.get<{ data: ContactsResponse }>('/contacts')).data.data });
   const groups = useQuery({ queryKey: ['contact-groups'], queryFn: async () => (await api.get<{ data: ContactGroup[] }>('/contact-groups')).data.data });
+  const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: async () => (await api.get<{ data: WorkspaceDashboard }>('/dashboard')).data.data });
+
+  const quota = dashboard.data?.quota;
+  const quotaLimit = quota?.monthlyRecipients?.limit ?? null;
+  const quotaUsed = quota?.monthlyRecipients?.used ?? 0;
+  const quotaRemaining = quotaLimit !== null ? Math.max(0, quotaLimit - quotaUsed) : null;
 
   const recipientsQuery = useQuery({
     queryKey: ['campaign-recipients', inspectingCampaign?.id],
@@ -138,6 +144,43 @@ export function CampaignsPage() {
       </div>
 
       {notice && <InlineNotice {...notice} onDismiss={() => setNotice(null)} />}
+
+      {quota && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-line bg-white p-4 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-brand-50 p-2.5 text-brand-700">
+              <Sparkles size={18} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-ink">{quota.plan.name} Plan Quota:</span>
+                <span className="text-xs text-muted">
+                  {quotaUsed.toLocaleString()} / {quotaLimit !== null ? quotaLimit.toLocaleString() : 'Unlimited'} monthly messages sent
+                </span>
+              </div>
+              <p className="text-xs text-muted mt-0.5">
+                {quotaRemaining !== null ? `${quotaRemaining.toLocaleString()} messages remaining this cycle` : 'Unlimited messages'} · Meta daily throughput limit: 250/24h (Unverified Trial)
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {quotaLimit !== null && (
+              <div className="hidden md:block w-32 h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={`h-full rounded-full ${quota.monthlyRecipients.percentage > 90 ? 'bg-red-500' : 'bg-brand-600'}`}
+                  style={{ width: `${Math.min(100, quota.monthlyRecipients.percentage)}%` }}
+                />
+              </div>
+            )}
+            <a
+              href="mailto:support@whatsdup.in?subject=Upgrade%20WhatsdUP%20Plan"
+              className="rounded-xl border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-semibold text-brand-700 hover:bg-brand-100"
+            >
+              Upgrade Plan
+            </a>
+          </div>
+        </div>
+      )}
 
       {creating && (
         <section className="rounded-2xl border border-line bg-white p-6 shadow-card">
@@ -521,12 +564,27 @@ export function CampaignsPage() {
               </div>
             </div>
 
-            <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 leading-relaxed">
-              <AlertCircle size={16} className="shrink-0 mt-0.5" />
-              <p>
-                <strong>Opt-out Suppression Active:</strong> Any contacts who opted out after audience snapshot creation will be skipped at send time.
-              </p>
-            </div>
+            {quotaRemaining !== null && launchingCampaign.recipientCount > quotaRemaining ? (
+              <div className="flex items-start gap-2.5 rounded-xl bg-red-50 p-3.5 text-xs text-red-800 leading-relaxed border border-red-200">
+                <ShieldAlert size={18} className="shrink-0 mt-0.5 text-red-600" />
+                <div>
+                  <p className="font-bold">Subscription Monthly Quota Exceeded</p>
+                  <p className="mt-1">
+                    This campaign requires <strong>{launchingCampaign.recipientCount.toLocaleString()}</strong> messages, but your <strong>{quota?.plan?.name ?? 'current'} Plan</strong> only has <strong>{quotaRemaining.toLocaleString()}</strong> message slots remaining this billing cycle.
+                  </p>
+                  <p className="mt-1.5 font-medium text-red-900">
+                    Please upgrade your WhatsdUP subscription plan to launch this campaign.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 leading-relaxed">
+                <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                <p>
+                  <strong>Opt-out Suppression Active:</strong> Any contacts who opted out after audience snapshot creation will be skipped at send time.
+                </p>
+              </div>
+            )}
 
             <div className="flex justify-end gap-3 pt-2">
               <button
@@ -537,7 +595,7 @@ export function CampaignsPage() {
                 Cancel
               </button>
               <button
-                disabled={launch.isPending}
+                disabled={launch.isPending || (quotaRemaining !== null && launchingCampaign.recipientCount > quotaRemaining)}
                 onClick={() => {
                   const id = launchingCampaign.id;
                   setLaunchingCampaign(null);
